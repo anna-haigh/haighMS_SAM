@@ -1,0 +1,87 @@
+library(tidyverse)
+library(lubridate)
+library(stringr)
+
+# Read in data
+all_env <- read.csv("~/Masters/Andrews/Environmental_data/all_env_data_2025.csv")
+trees <- read.csv("~/Masters/Andrews/big_tree_data.csv")
+wp <- read.csv("~/Masters/Andrews/Environmental_data/2025_hja_wp_dat.csv")
+fluor <- read.csv("~/Masters/Andrews/all_fluorescence_2025.csv")
+canopy <- read.csv("~/Masters/Andrews/Environmental_data/dscmet_421_b_5min_2025.csv")
+
+
+##Fluorescence data set
+fluor <- fluor %>%
+  mutate(start_date = mdy(start_date)) %>%
+  rename(needle_age = needle.age) %>%
+  mutate(tree_id = as.factor(tree_id)) %>%
+  mutate(measurement = factor(measurement, levels=c("initial", "0","1","7","9","14")))%>%
+  mutate(panel_id = as.factor(panel_id)) %>%
+  mutate(tree_treatment = as.factor(tree_treatment)) 
+
+head(fluor)
+
+tree_info <- trees %>%
+  mutate(start_date = mdy(start_date)) %>%
+  mutate(measurement_date = mdy(measurement_date)) %>%
+  mutate(dayPPFD = average_day_lux_HOBO * 0.0185) %>%
+  mutate(maxPPFD = maximum_lux_HOBO * 0.0185) %>%
+  select(start_date,tree_id,panel_id,tree_treatment,heat_treatment,needle_age,measurement,measurement_date, dayPPFD, maxPPFD)
+
+end_dates <- tree_info %>%
+  filter(measurement == 0) %>%
+  distinct(tree_id, panel_id, end_date = measurement_date)
+
+tree_info <- tree_info %>%
+  left_join(end_dates, by = c("tree_id", "panel_id"))
+
+all_flu <- merge(fluor, tree_info, by = c("start_date","tree_id","tree_treatment","panel_id","needle_age","measurement","heat_treatment"))
+
+all_flu <- all_flu %>%
+  mutate(collect_time = ymd_hm(paste(measurement_date, "09:00"),
+                               tz = "America/Los_Angeles"))
+head(all_flu)
+
+
+#Water potential data set
+head(wp)
+wp <- wp %>%
+  mutate(
+    date          = dmy(paste(date, 2025)), 
+    tree_treatment = case_when(treatment == "n" ~ "control",
+                               treatment == "i" ~ "irrigated"),
+    predawn_time  = ymd_hm(paste(date, "04:00"), tz = "America/Los_Angeles"),
+    midday_time   = ymd_hm(paste(date, "13:00"), tz = "America/Los_Angeles")
+  ) %>%
+  select(-treatment)
+
+wp_long <- wp %>%
+  pivot_longer(c(predawn, midday),
+                      names_to = "wp_type", values_to = "wp_value") %>%
+  mutate(collect_time = if_else(wp_type == "predawn", predawn_time, midday_time)) %>%
+  select(-predawn_time, -midday_time)
+
+head(wp_long)
+
+
+#Met station data
+canopy <- canopy[-c(1:2),] 
+canopy <- canopy %>%
+  subset(select = c("Date","WSPD_SNC_MAX_150_0_01","WSPD_SNC_MEAN_150_0_01"))
+
+all_env <- left_join(all_env, canopy, by = "Date")
+
+head(all_env)
+
+env_clean <- all_env %>%
+  mutate(Date_time = mdy_hm(Date),        
+    Date_only = as.Date(Date_time),   
+    airtemp = (AIRTEMP_MEAN_150_0_04), 
+    windspeed = (WSPD_SNC_MEAN_150_0_01), 
+    vpd_kpa = (VPD_MEAN_150_0_04 * 0.1)) %>%
+  select(Date_time, Date_only, airtemp, vpd_kpa, windspeed)
+
+
+head(env_clean)
+
+
