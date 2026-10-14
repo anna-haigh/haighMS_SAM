@@ -14,7 +14,7 @@ fluor <- fluor %>%
   mutate(start_date = mdy(start_date),
          needle_age = needle.age,
          tree_id = as.factor(tree_id),
-         measurement = as.factor(measurement, levels=c("initial", "0","1","7","9","14")),
+         measurement = as.factor(measurement),
          panel_id = as.factor(panel_id),
          tree_treatment = as.factor(tree_treatment)) 
 
@@ -25,7 +25,7 @@ tree_info <- tree %>%
          measurement_date = mdy(measurement_date),
          dayPPFD = (average_day_lux_HOBO * 0.0185),
          maxPPFD = (maximum_lux_HOBO * 0.0185)) %>%
-  select(start_date,tree_id,panel_id,tree_treatment,heat_treatment,needle_age,measurement,measurement_date, dayPPFD, maxPPFD)
+  select(measurement_date,tree_id,panel_id,tree_treatment,heat_treatment,needle_age,measurement,dayPPFD, maxPPFD, start_date)
 
 end_dates <- tree_info %>%
   filter(measurement == 0) %>%
@@ -55,15 +55,6 @@ water <- water %>%
 
 head(water)
 
-wp <- water %>%
-  pivot_longer(c(predawn, midday),
-               names_to = "wp_type", values_to = "wp_value") %>%
-  mutate(collect_time = if_else(wp_type == "predawn", predawn_time, midday_time)) %>%
-  select(-predawn_time, -midday_time)
-
-head(wp)
-
-
 #Met station data
 canopy <- canopy[-c(1:2),] 
 canopy <- canopy %>%
@@ -82,3 +73,57 @@ env_clean <- env %>%
   select(Date_time, Date_only, airtemp, vpd_kpa, windspeed)
 
 head(env_clean)
+
+#Full data set
+env_clean <- env_clean %>%
+  mutate(windspeed = as.numeric(windspeed))
+
+env_sum <- env_clean %>%
+  group_by(Date_only) %>%
+  summarise(
+    max_airtemp    = max(airtemp, na.rm = TRUE),
+    mean_airtemp   = mean(airtemp, na.rm = TRUE),
+    min_airtemp    = min(airtemp, na.rm = TRUE),
+    max_vpd        = max(vpd_kpa, na.rm = TRUE),
+    mean_vpd       = mean(vpd_kpa, na.rm = TRUE),
+    min_vpd        = min(vpd_kpa, na.rm = TRUE),
+    mean_windspeed = mean(windspeed, na.rm = TRUE),
+    .groups = "drop") %>%
+  filter(Date_only > "2025-04-30")
+
+head(env_sum)
+head(water)
+
+joined <- env_sum %>%
+  left_join(water, by = c("Date_only" = "date"))
+
+all_join <- joined %>%
+  left_join(all_flu, by = c("Date_only" = "measurement_date","tree_id","tree_treatment"))
+
+head(all_join)
+
+adjusted <- all_join %>%
+  mutate(
+    max_airtemp_adj = if_else(
+      heat_treatment == "heated" & Date_only >= start_date & Date_only < end_date,
+      max_airtemp + 2,
+      max_airtemp),
+    mean_airtemp_adj = if_else(
+      heat_treatment == "heated" & Date_only >= start_date & Date_only < end_date,
+      mean_airtemp + 2,
+      mean_airtemp))
+
+names(adjusted)
+
+SAM_data <- adjusted %>%
+  rename(date = Date_only,
+         panel_on = start_date,
+         panel_off = end_date,
+         FvFm = Fv.Fm) %>%
+  select(-predawn_time, -midday_time, -collect_time, -needle.age)
+
+names(SAM_data)
+
+SAM_data <- SAM_data[, c(1,2,24,3,25,4,5,6,7,8,9,12,15,14,17,21,22,13,23,16,10,11,18,19,20)]
+
+write.csv(SAM_data, "data/SAM_data.csv", row.names=FALSE)

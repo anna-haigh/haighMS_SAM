@@ -1,0 +1,1584 @@
+library(dplyr)
+library(car)
+library(nlme)
+library(corrplot)
+library(emmeans)
+library(knitr)
+library(kableExtra)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+
+source("~/Masters/Andrews/R_code/functions/lme_model_selection.R")
+
+treedat <- read.csv("~/Masters/Andrews/cleaned_data_final_2025.csv")
+flur <- read.csv("~/Masters/Andrews/timeseries_fluorescence_2025.csv")
+bigflur <- read.csv("~/Masters/Andrews/big_fluorescence_series_2025.csv")
+View(treedat)
+
+
+
+
+names(treedat)
+names(bigflur)
+
+View(bigflur)
+
+
+
+bigflur <- bigflur %>%
+  filter(FvFm > 0)
+
+# FvFm model
+env_vars <- c("predawn","midday","cum_stress_hours_above_temp","cum_vpd_hours",
+              "max_airtemp_lag2", "max_airtemp_lag3",
+              "mean_airtemp_lag1","mean_airtemp_lag2","mean_airtemp_lag3",
+              "min_airtemp_lag1","min_airtemp_lag2","min_airtemp_lag3",
+              "max_vpd_lag1","max_vpd_lag2","max_vpd_lag3",
+              "mean_vpd_lag1","mean_vpd_lag2","mean_vpd_lag3",
+              "min_vpd_lag1","min_vpd_lag2","min_vpd_lag3",
+              "mean_windspeed_lag1",
+              "max_min_lag1","max_min_lag2","max_min_lag3")
+
+paired_env_interactions <- c(
+  list(
+    c("max_airtemp_lag2", "max_airtemp_lag3"),
+    c("mean_airtemp_lag1","mean_airtemp_lag2"),
+    c("mean_airtemp_lag2" ,"mean_airtemp_lag3"),
+    c("min_airtemp_lag1","min_airtemp_lag2"),
+    c("min_airtemp_lag2","min_airtemp_lag3"),
+    c("max_vpd_lag1" ,"max_vpd_lag2"),
+    c("max_vpd_lag2" ,"max_vpd_lag3"),
+    c("mean_vpd_lag1" ,"mean_vpd_lag2"),
+    c("mean_vpd_lag2" ,"mean_vpd_lag3"),
+    c("min_vpd_lag1","min_vpd_lag2"),
+    c("min_vpd_lag2","min_vpd_lag3"),
+    c("min_airtemp_lag1","mean_airtemp_lag1"),
+    c("max_airtemp_lag2","mean_airtemp_lag2"),
+    c("min_airtemp_lag2","mean_airtemp_lag2"),
+    c("max_airtemp_lag2","min_airtemp_lag2"),
+    c("max_airtemp_lag3","mean_airtemp_lag3"),
+    c("min_airtemp_lag3","mean_airtemp_lag3"),
+    c("max_airtemp_lag3","min_airtemp_lag3"),
+    c("max_airtemp_lag2","max_vpd_lag2"),
+    c("max_airtemp_lag3","max_vpd_lag3"),
+    c("max_min_lag1","max_min_lag2"),
+    c("max_min_lag2","max_min_lag3")
+  )
+)
+
+PSII <- run_model_pipeline(
+  data = bigflur,
+  env_vars = env_vars,
+  factors = c("needle_age","tree_treatment", "max_airtemp_lag1"),
+  factor_env_factors = c("needle_age","tree_treatment", "max_airtemp_lag1"),
+  response = "FvFm",
+  paired_env_interactions = paired_env_interactions,
+  three_way_interactions = TRUE
+)
+
+anova(PSII$final_model)
+
+
+lightenv_vars <- c("midday","cum_stress_hours_above_temp","cum_vpd_hours",
+                   "dayPPFD", "maxPPFD",
+              "max_airtemp_lag2", "max_airtemp_lag3",
+              "mean_airtemp_lag1","mean_airtemp_lag2","mean_airtemp_lag3",
+              "min_airtemp_lag1","min_airtemp_lag2","min_airtemp_lag3",
+              "max_vpd_lag1","max_vpd_lag2","max_vpd_lag3",
+              "mean_vpd_lag1","mean_vpd_lag2","mean_vpd_lag3",
+              "min_vpd_lag1","min_vpd_lag2","min_vpd_lag3",
+              "mean_windspeed_lag1",
+              "max_min_lag1","max_min_lag2","max_min_lag3")
+
+light_paired_env_interactions <- c(
+  list(
+    c("max_vpd_lag1", "midday"),
+    c("max_vpd_lag2", "midday"),
+    c("max_vpd_lag3", "midday"),
+    c("mean_vpd_lag1", "midday"),
+    c("mean_vpd_lag2", "midday"),
+    c("mean_vpd_lag3", "midday"),
+    c("cum_vpd_hours", "midday"),
+    c("cum_stress_hours_above_temp", "cum_vpd_hours"),
+    c("cum_stress_hours_above_temp", "midday")
+  )
+)
+
+lightPSII <- run_model_pipeline(
+  data = bigflur,
+  env_vars = lightenv_vars,
+  factors = c("needle_age","tree_treatment", "max_airtemp_lag1"),
+  factor_env_factors = c("needle_age","tree_treatment", "max_airtemp_lag1"),
+  response = "FvFm",
+  protect_from_vif = c("cum_stress_hours_above_temp", "cum_vpd_hours", "max_vpd_lag1"),
+  paired_env_interactions = light_paired_env_interactions,
+  three_way_interactions = TRUE
+)
+
+anova(lightPSII$final_model)
+
+# Resilience = (M1 - M0) / (Minitial - M0)
+zscore <- scale(treedat$Resilience)
+outliers <- abs(zscore) > 3
+tree_cleaned <- treedat[!apply(outliers, 1, any), ]
+
+names(tree_cleaned)
+
+resilience <- run_model_pipeline(
+  data = tree_cleaned,
+  env_vars = c("dayPPFD", "maxPPFD", "mean_airtemp_primet_trmt","mean_vpd_primet_trmt",
+               "max_vpd_primet_trmt", "min_airtemp_primet_trmt",
+               "cum_stress_Minitial", "cum_stress_M0", "cum_stress_M1",
+               "cum_vpd_stress_Minitial", "cum_vpd_stress_M0", "cum_vpd_stress_M1","lag1_max_airtemp_Minitial",
+               "lag1_max_airtemp_M0", "lag1_max_airtemp_M1", "lag2_max_airtemp_Minitial", "lag2_max_airtemp_M0",
+               "lag2_max_airtemp_M1","lag3_max_airtemp_Minitial","lag3_max_airtemp_M0", "lag3_max_airtemp_M1",
+               "lag1_max_vpd_Minitial", "lag1_max_vpd_M0","lag1_max_vpd_M1","lag2_max_vpd_Minitial","lag2_max_vpd_M0","lag2_max_vpd_M1",
+               "lag3_max_vpd_Minitial","lag3_max_vpd_M0","lag3_max_vpd_M1",
+               "lag1_mean_airtemp_M0", "lag1_mean_airtemp_M1", "lag2_mean_airtemp_Minitial", "lag2_mean_airtemp_M0",
+               "lag2_mean_airtemp_M1","lag3_mean_airtemp_Minitial","lag3_mean_airtemp_M0", "lag3_mean_airtemp_M1",
+               "lag1_mean_vpd_Minitial", "lag1_mean_vpd_M0","lag1_mean_vpd_M1","lag2_mean_vpd_Minitial","lag2_mean_vpd_M0","lag2_mean_vpd_M1",
+               "lag3_mean_vpd_Minitial","lag3_mean_vpd_M0","lag3_mean_vpd_M1",
+               "lag1_min_airtemp_M0", "lag1_min_airtemp_M1", "lag2_min_airtemp_Minitial", "lag2_min_airtemp_M0",
+               "lag2_min_airtemp_M1","lag3_min_airtemp_Minitial","lag3_min_airtemp_M0", "lag3_min_airtemp_M1",
+               "lag1_min_vpd_Minitial", "lag1_min_vpd_M0","lag1_min_vpd_M1","lag2_min_vpd_Minitial","lag2_min_vpd_M0","lag2_min_vpd_M1",
+               "lag3_min_vpd_Minitial","lag3_min_vpd_M0","lag3_min_vpd_M1",
+               "lag1_mean_windspeed_Minitial", "lag1_mean_windspeed_M0", "lag1_mean_windspeed_M1",
+               "lag2_mean_windspeed_Minitial", "lag2_mean_windspeed_M0", "lag2_mean_windspeed_M1",
+               "lag3_mean_windspeed_Minitial", "lag3_mean_windspeed_M0", "lag3_mean_windspeed_M1",
+               "lag1_max_min_Minitial", "lag1_max_min_M0", "lag1_max_min_M1",
+               "lag2_max_min_Minitial", "lag2_max_min_M0", "lag2_max_min_M1",
+               "lag3_max_min_Minitial", "lag3_max_min_M0", "lag3_max_min_M1"),
+  factors = c("needle_age", "tree_treatment", "max_airtemp_primet_trmt"),   
+  factor_env_factors = c("needle_age", "tree_treatment", "max_airtemp_primet_trmt"),
+  response = "Resilience",
+  paired_env_interactions = list(
+    c("cum_stress_Minitial", "cum_stress_M0"),
+    c("cum_stress_M0", "cum_stress_M1"),
+    c("cum_stress_Minitial", "cum_stress_M1"),
+    c("cum_vpd_stress_Minitial", "cum_vpd_stress_M0"),
+    c("cum_vpd_stress_M0", "cum_vpd_stress_M1"),
+    c("cum_vpd_stress_Minitial", "cum_vpd_stress_M1"),
+    c("lag1_max_airtemp_Minitial","lag1_max_airtemp_M0"),
+    c("lag1_max_airtemp_M0","lag1_max_airtemp_M1"),
+    c("lag1_max_airtemp_Minitial","lag2_max_airtemp_M1"),
+    c("lag2_max_airtemp_Minitial","lag2_max_airtemp_M0"),
+    c("lag2_max_airtemp_M0","lag2_max_airtemp_M1"),
+    c("lag2_max_airtemp_Minitial","lag2_max_airtemp_M1"),
+    c("lag3_max_airtemp_Minitial","lag3_max_airtemp_M0"),
+    c("lag3_max_airtemp_M0","lag3_max_airtemp_M1"),
+    c("lag3_max_airtemp_Minitial","lag3_max_airtemp_M1"),
+    c("lag1_max_vpd_Minitial","lag1_max_vpd_M0"),
+    c("lag1_max_vpd_M0","lag1_max_vpd_M1"),
+    c("lag1_max_vpd_Minitial","lag2_max_vpd_M1"),
+    c("lag2_max_vpd_Minitial","lag2_max_vpd_M0"),
+    c("lag2_max_vpd_M0","lag2_max_vpd_M1"),
+    c("lag2_max_vpd_Minitial","lag2_max_vpd_M1"),
+    c("lag3_max_vpd_Minitial","lag3_max_vpd_M0"),
+    c("lag3_max_vpd_M0","lag3_max_vpd_M1"),
+    c("lag3_max_vpd_Minitial","lag3_max_vpd_M1"),
+    c("lag1_mean_airtemp_Minitial","lag1_mean_airtemp_M0"),
+    c("lag1_mean_airtemp_M0","lag1_mean_airtemp_M1"),
+    c("lag1_mean_airtemp_Minitial","lag2_mean_airtemp_M1"),
+    c("lag2_mean_airtemp_Minitial","lag2_mean_airtemp_M0"),
+    c("lag2_mean_airtemp_M0","lag2_mean_airtemp_M1"),
+    c("lag2_mean_airtemp_Minitial","lag2_mean_airtemp_M1"),
+    c("lag3_mean_airtemp_Minitial","lag3_mean_airtemp_M0"),
+    c("lag3_mean_airtemp_M0","lag3_mean_airtemp_M1"),
+    c("lag3_mean_airtemp_Minitial","lag3_mean_airtemp_M1"),
+    c("lag1_mean_vpd_Minitial","lag1_mean_vpd_M0"),
+    c("lag1_mean_vpd_M0","lag1_mean_vpd_M1"),
+    c("lag1_mean_vpd_Minitial","lag2_mean_vpd_M1"),
+    c("lag2_mean_vpd_Minitial","lag2_mean_vpd_M0"),
+    c("lag2_mean_vpd_M0","lag2_mean_vpd_M1"),
+    c("lag2_mean_vpd_Minitial","lag2_mean_vpd_M1"),
+    c("lag3_mean_vpd_Minitial","lag3_mean_vpd_M0"),
+    c("lag3_mean_vpd_M0","lag3_mean_vpd_M1"),
+    c("lag3_mean_vpd_Minitial","lag3_mean_vpd_M1"),
+    c("lag1_min_airtemp_Minitial","lag1_min_airtemp_M0"),
+    c("lag1_min_airtemp_M0","lag1_min_airtemp_M1"),
+    c("lag1_min_airtemp_Minitial","lag2_min_airtemp_M1"),
+    c("lag2_min_airtemp_Minitial","lag2_min_airtemp_M0"),
+    c("lag2_min_airtemp_M0","lag2_min_airtemp_M1"),
+    c("lag2_min_airtemp_Minitial","lag2_min_airtemp_M1"),
+    c("lag3_min_airtemp_Minitial","lag3_min_airtemp_M0"),
+    c("lag3_min_airtemp_M0","lag3_min_airtemp_M1"),
+    c("lag3_min_airtemp_Minitial","lag3_min_airtemp_M1"),
+    c("lag1_min_vpd_Minitial","lag1_min_vpd_M0"),
+    c("lag1_min_vpd_M0","lag1_min_vpd_M1"),
+    c("lag1_min_vpd_Minitial","lag2_min_vpd_M1"),
+    c("lag2_min_vpd_Minitial","lag2_min_vpd_M0"),
+    c("lag2_min_vpd_M0","lag2_min_vpd_M1"),
+    c("lag2_min_vpd_Minitial","lag2_min_vpd_M1"),
+    c("lag3_min_vpd_Minitial","lag3_min_vpd_M0"),
+    c("lag3_min_vpd_M0","lag3_min_vpd_M1"),
+    c("lag3_min_vpd_Minitial","lag3_min_vpd_M1"),
+    c("dayPPFD","maxPPFD")
+  ),
+  three_way_interactions = TRUE
+)
+summary(result1$final_model)
+anova(resilience$final_model)
+
+resil_mod<-resilience$final_model
+
+
+anova(result1a$final_model)
+summary(result1a$final_model)
+#####################################
+# Resistance model
+# Resilience = M0 / Minitial
+zscore2 <- scale(treedat$Resistance)
+outliers2 <- abs(zscore2) > 3
+tree_cleaned2 <- treedat[!apply(outliers2, 1, any), ]
+
+resistance_mod <- run_model_pipeline(
+  data = tree_cleaned2,
+  env_vars = c("mean_airtemp_primet_trmt","mean_vpd_primet_trmt", "maxPPFD", "dayPPFD",
+               "max_vpd_primet_trmt","min_airtemp_primet_trmt",
+               "cum_stress_Minitial", "cum_stress_M0", "cum_vpd_stress_Minitial", "cum_vpd_stress_M0", "lag1_max_airtemp_Minitial",
+               "lag1_max_airtemp_M0", "lag2_max_airtemp_Minitial", "lag2_max_airtemp_M0",
+               "lag3_max_airtemp_Minitial","lag3_max_airtemp_M0",
+               "lag1_max_vpd_Minitial", "lag1_max_vpd_M0","lag2_max_vpd_Minitial","lag2_max_vpd_M0",
+               "lag3_max_vpd_Minitial","lag3_max_vpd_M0",
+               "lag1_mean_airtemp_M0", "lag2_mean_airtemp_Minitial", "lag2_mean_airtemp_M0",
+               "lag3_mean_airtemp_Minitial","lag3_mean_airtemp_M0", 
+               "lag1_mean_vpd_Minitial", "lag1_mean_vpd_M0","lag2_mean_vpd_Minitial","lag2_mean_vpd_M0",
+               "lag3_mean_vpd_Minitial","lag3_mean_vpd_M0",
+               "lag1_min_airtemp_M0", "lag2_min_airtemp_Minitial", "lag2_min_airtemp_M0",
+               "lag3_min_airtemp_Minitial","lag3_min_airtemp_M0",
+               "lag1_min_vpd_Minitial", "lag1_min_vpd_M0","lag2_min_vpd_Minitial","lag2_min_vpd_M0",
+               "lag3_min_vpd_Minitial","lag3_min_vpd_M0",
+               "lag1_mean_windspeed_Minitial", "lag1_mean_windspeed_M0", 
+               "lag2_mean_windspeed_Minitial", "lag2_mean_windspeed_M0", 
+               "lag3_mean_windspeed_Minitial", "lag3_mean_windspeed_M0", 
+               "lag1_max_min_Minitial", "lag1_max_min_M0", 
+               "lag2_max_min_Minitial", "lag2_max_min_M0", 
+               "lag3_max_min_Minitial", "lag3_max_min_M0" 
+               ),
+  factors = c("needle_age", "tree_treatment", "max_airtemp_primet_trmt"),   
+  factor_env_factors = c("needle_age", "tree_treatment", "max_airtemp_primet_trmt"),
+  response = "Resistance",
+  paired_env_interactions = list(
+    c("cum_stress_Minitial", "cum_stress_M0"),
+    c("cum_vpd_stress_Minitial","cum_vpd_stress_M0"),
+    c("lag1_max_airtemp_Minitial","lag1_max_airtemp_M0"),
+    c("lag2_max_airtemp_Minitial","lag2_max_airtemp_M0"),
+    c("lag3_max_airtemp_Minitial","lag3_max_airtemp_M0"),
+    c("lag1_max_vpd_Minitial","lag1_max_vpd_M0"),
+    c("lag2_max_vpd_Minitial","lag2_max_vpd_M0"),
+    c("lag3_max_vpd_Minitial","lag3_max_vpd_M0"),
+    c("lag1_mean_airtemp_Minitial","lag1_mean_airtemp_M0"),
+    c("lag2_mean_airtemp_Minitial","lag2_mean_airtemp_M0"),
+    c("lag3_mean_airtemp_Minitial","lag3_mean_airtemp_M0"),
+    c("lag1_mean_vpd_Minitial","lag1_mean_vpd_M0"),
+    c("lag2_mean_vpd_Minitial","lag2_mean_vpd_M0"),
+    c("lag3_mean_vpd_Minitial","lag3_mean_vpd_M0"),
+    c("lag1_min_airtemp_Minitial","lag1_min_airtemp_M0"),
+    c("lag2_min_airtemp_Minitial","lag2_min_airtemp_M0"),
+    c("lag3_min_airtemp_Minitial","lag3_min_airtemp_M0"),
+    c("lag1_min_vpd_Minitial","lag1_min_vpd_M0"),
+    c("lag2_min_vpd_Minitial","lag2_min_vpd_M0"),
+    c("lag3_min_vpd_Minitial","lag3_min_vpd_M0"),
+    c("maxPPFD","dayPPFD")
+  )
+)
+anova(resistance_mod$final_model)
+
+resis_mod <- resistance_mod$final_model
+# Recovery = M1 / M0
+
+zscore3 <- scale(treedat$Day1_Recovery)
+outliers3 <- abs(zscore3) > 3
+tree_cleaned3 <- treedat[!apply(outliers3, 1, any), ]
+
+recovery1 <- run_model_pipeline(
+  data = tree_cleaned3,
+  env_vars = c("mean_airtemp_primet_trmt","mean_vpd_primet_trmt", "dayPPFD", "maxPPFD",
+               "max_vpd_primet_trmt", "min_airtemp_primet_trmt",
+               "cum_stress_Minitial", "cum_stress_M0", "cum_stress_M1", "cum_vpd_stress_Minitial", "cum_vpd_stress_M0", "cum_vpd_stress_M1", "lag1_max_airtemp_Minitial",
+               "lag1_max_airtemp_M0", "lag1_max_airtemp_M1", "lag2_max_airtemp_Minitial", "lag2_max_airtemp_M0",
+               "lag2_max_airtemp_M1","lag3_max_airtemp_Minitial","lag3_max_airtemp_M0", "lag3_max_airtemp_M1",
+               "lag1_max_vpd_Minitial", "lag1_max_vpd_M0","lag1_max_vpd_M1","lag2_max_vpd_Minitial","lag2_max_vpd_M0","lag2_max_vpd_M1",
+               "lag3_max_vpd_Minitial","lag3_max_vpd_M0","lag3_max_vpd_M1",
+               "lag1_mean_airtemp_M0", "lag1_mean_airtemp_M1", "lag2_mean_airtemp_Minitial", "lag2_mean_airtemp_M0",
+               "lag2_mean_airtemp_M1","lag3_mean_airtemp_Minitial","lag3_mean_airtemp_M0", "lag3_mean_airtemp_M1",
+               "lag1_mean_vpd_Minitial", "lag1_mean_vpd_M0","lag1_mean_vpd_M1","lag2_mean_vpd_Minitial","lag2_mean_vpd_M0","lag2_mean_vpd_M1",
+               "lag3_mean_vpd_Minitial","lag3_mean_vpd_M0","lag3_mean_vpd_M1",
+               "lag1_min_airtemp_M0", "lag1_min_airtemp_M1", "lag2_min_airtemp_Minitial", "lag2_min_airtemp_M0",
+               "lag2_min_airtemp_M1","lag3_min_airtemp_Minitial","lag3_min_airtemp_M0", "lag3_min_airtemp_M1",
+               "lag1_min_vpd_Minitial", "lag1_min_vpd_M0","lag1_min_vpd_M1","lag2_min_vpd_Minitial","lag2_min_vpd_M0","lag2_min_vpd_M1",
+               "lag3_min_vpd_Minitial","lag3_min_vpd_M0","lag3_min_vpd_M1",
+               "lag1_mean_windspeed_Minitial", "lag1_mean_windspeed_M0", "lag1_mean_windspeed_M1",
+               "lag2_mean_windspeed_Minitial", "lag2_mean_windspeed_M0", "lag2_mean_windspeed_M1",
+               "lag3_mean_windspeed_Minitial", "lag3_mean_windspeed_M0", "lag3_mean_windspeed_M1",
+               "lag1_max_min_Minitial", "lag1_max_min_M0", "lag1_max_min_M1",
+               "lag2_max_min_Minitial", "lag2_max_min_M0", "lag2_max_min_M1",
+               "lag3_max_min_Minitial", "lag3_max_min_M0", "lag3_max_min_M1"),
+  factors = c("needle_age", "tree_treatment", "max_airtemp_primet_trmt"),   
+  factor_env_factors = c("needle_age", "tree_treatment", "max_airtemp_primet_trmt"),
+  response = "Day1_Recovery",
+  paired_env_interactions = list(
+    c("cum_stress_Minitial", "cum_stress_M0"),
+    c("cum_stress_M0", "cum_stress_M1"),
+    c("cum_stress_Minitial", "cum_stress_M1"),
+    c("cum_vpd_stress_Minitial", "cum_vpd_stress_M0"),
+    c("cum_vpd_stress_M0", "cum_vpd_stress_M1"),
+    c("cum_vpd_stress_Minitial", "cum_vpd_stress_M1"),
+    c("lag1_max_airtemp_Minitial","lag1_max_airtemp_M0"),
+    c("lag1_max_airtemp_M0","lag1_max_airtemp_M1"),
+    c("lag1_max_airtemp_Minitial","lag2_max_airtemp_M1"),
+    c("lag2_max_airtemp_Minitial","lag2_max_airtemp_M0"),
+    c("lag2_max_airtemp_M0","lag2_max_airtemp_M1"),
+    c("lag2_max_airtemp_Minitial","lag2_max_airtemp_M1"),
+    c("lag3_max_airtemp_Minitial","lag3_max_airtemp_M0"),
+    c("lag3_max_airtemp_M0","lag3_max_airtemp_M1"),
+    c("lag3_max_airtemp_Minitial","lag3_max_airtemp_M1"),
+    c("lag1_max_vpd_Minitial","lag1_max_vpd_M0"),
+    c("lag1_max_vpd_M0","lag1_max_vpd_M1"),
+    c("lag1_max_vpd_Minitial","lag2_max_vpd_M1"),
+    c("lag2_max_vpd_Minitial","lag2_max_vpd_M0"),
+    c("lag2_max_vpd_M0","lag2_max_vpd_M1"),
+    c("lag2_max_vpd_Minitial","lag2_max_vpd_M1"),
+    c("lag3_max_vpd_Minitial","lag3_max_vpd_M0"),
+    c("lag3_max_vpd_M0","lag3_max_vpd_M1"),
+    c("lag3_max_vpd_Minitial","lag3_max_vpd_M1"),
+    c("lag1_mean_airtemp_Minitial","lag1_mean_airtemp_M0"),
+    c("lag1_mean_airtemp_M0","lag1_mean_airtemp_M1"),
+    c("lag1_mean_airtemp_Minitial","lag2_mean_airtemp_M1"),
+    c("lag2_mean_airtemp_Minitial","lag2_mean_airtemp_M0"),
+    c("lag2_mean_airtemp_M0","lag2_mean_airtemp_M1"),
+    c("lag2_mean_airtemp_Minitial","lag2_mean_airtemp_M1"),
+    c("lag3_mean_airtemp_Minitial","lag3_mean_airtemp_M0"),
+    c("lag3_mean_airtemp_M0","lag3_mean_airtemp_M1"),
+    c("lag3_mean_airtemp_Minitial","lag3_mean_airtemp_M1"),
+    c("lag1_mean_vpd_Minitial","lag1_mean_vpd_M0"),
+    c("lag1_mean_vpd_M0","lag1_mean_vpd_M1"),
+    c("lag1_mean_vpd_Minitial","lag2_mean_vpd_M1"),
+    c("lag2_mean_vpd_Minitial","lag2_mean_vpd_M0"),
+    c("lag2_mean_vpd_M0","lag2_mean_vpd_M1"),
+    c("lag2_mean_vpd_Minitial","lag2_mean_vpd_M1"),
+    c("lag3_mean_vpd_Minitial","lag3_mean_vpd_M0"),
+    c("lag3_mean_vpd_M0","lag3_mean_vpd_M1"),
+    c("lag3_mean_vpd_Minitial","lag3_mean_vpd_M1"),
+    c("lag1_min_airtemp_Minitial","lag1_min_airtemp_M0"),
+    c("lag1_min_airtemp_M0","lag1_min_airtemp_M1"),
+    c("lag1_min_airtemp_Minitial","lag2_min_airtemp_M1"),
+    c("lag2_min_airtemp_Minitial","lag2_min_airtemp_M0"),
+    c("lag2_min_airtemp_M0","lag2_min_airtemp_M1"),
+    c("lag2_min_airtemp_Minitial","lag2_min_airtemp_M1"),
+    c("lag3_min_airtemp_Minitial","lag3_min_airtemp_M0"),
+    c("lag3_min_airtemp_M0","lag3_min_airtemp_M1"),
+    c("lag3_min_airtemp_Minitial","lag3_min_airtemp_M1"),
+    c("lag1_min_vpd_Minitial","lag1_min_vpd_M0"),
+    c("lag1_min_vpd_M0","lag1_min_vpd_M1"),
+    c("lag1_min_vpd_Minitial","lag2_min_vpd_M1"),
+    c("lag2_min_vpd_Minitial","lag2_min_vpd_M0"),
+    c("lag2_min_vpd_M0","lag2_min_vpd_M1"),
+    c("lag2_min_vpd_Minitial","lag2_min_vpd_M1"),
+    c("lag3_min_vpd_Minitial","lag3_min_vpd_M0"),
+    c("lag3_min_vpd_M0","lag3_min_vpd_M1"),
+    c("lag3_min_vpd_Minitial","lag3_min_vpd_M1"),
+    c("dayPPFD","maxPPFD")
+  )
+)
+anova(recovery1$final_model)
+rec_mod <- recovery1$final_model
+
+## Save results
+aov_table <- anova(result1$final_model) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Term") %>%
+  rename(
+    numDF  = numDF,
+    denDF  = denDF,
+    `F-value` = `F-value`,
+    `p-value` = `p-value`
+  ) %>%
+  mutate(
+    `p-value` = case_when(
+      `p-value` < 0.001 ~ "<0.001",
+      TRUE ~ as.character(round(`p-value`, 3))
+    ),
+    `F-value` = round(`F-value`, 2)
+  )
+
+table1 <- aov_table %>%
+  kbl(
+    caption = "Linear mixed-effects model ANOVA table for estimated Fv/Fm resilience to heat event",
+    col.names = c("Fixed Effect", "num df", "den df", "F", "p"),
+    align = c("l", "c", "c", "c", "c"),
+    booktabs = TRUE   # clean lines for LaTeX/PDF
+  ) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position"),
+    full_width = FALSE
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  save_kable("~/Masters/Andrews/R_code/figures/resilience2025.pdf")
+
+aov_table2 <- anova(resis_mod1a$final_model) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Term") %>%
+  rename(
+    numDF  = numDF,
+    denDF  = denDF,
+    `F-value` = `F-value`,
+    `p-value` = `p-value`
+  ) %>%
+  mutate(
+    `p-value` = case_when(
+      `p-value` < 0.001 ~ "<0.001",
+      TRUE ~ as.character(round(`p-value`, 3))
+    ),
+    `F-value` = round(`F-value`, 2)
+  )
+
+table2 <- aov_table2 %>%
+  kbl(
+    caption = "Linear mixed-effects model ANOVA table for estimated Fv/Fm resistance to heat event",
+    col.names = c("Fixed Effect", "num df", "den df", "F", "p"),
+    align = c("l", "c", "c", "c", "c"),
+    booktabs = TRUE   # clean lines for LaTeX/PDF
+  ) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position"),
+    full_width = FALSE
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  save_kable("~/Masters/Andrews/R_code/figures/resistance2025.pdf")
+
+aov_table3 <- anova(recovery1a$final_model) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Term") %>%
+  rename(
+    numDF  = numDF,
+    denDF  = denDF,
+    `F-value` = `F-value`,
+    `p-value` = `p-value`
+  ) %>%
+  mutate(
+    `p-value` = case_when(
+      `p-value` < 0.001 ~ "<0.001",
+      TRUE ~ as.character(round(`p-value`, 3))
+    ),
+    `F-value` = round(`F-value`, 2)
+  )
+
+table3 <- aov_table3 %>%
+  kbl(
+    caption = "Linear mixed-effects model ANOVA table for estimated Fv/Fm recovery one day post heat event",
+    col.names = c("Fixed Effect", "num df", "den df", "F", "p"),
+    align = c("l", "c", "c", "c", "c"),
+    booktabs = TRUE   # clean lines for LaTeX/PDF
+  ) %>%
+  kable_styling(
+    latex_options = c("striped", "hold_position"),
+    full_width = FALSE
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  save_kable("~/Masters/Andrews/R_code/figures/recovery2025.pdf")
+
+## Emmeans comparisons
+library(tidyverse)
+anova(resil_mod)
+
+emt <- emtrends(resil_mod, ~ needle_age * tree_treatment,
+                var = "cum_stress_M0",
+                at = list(max_airtemp_primet_trmt = mean(resil_mod$data$max_airtemp_primet_trmt, na.rm = TRUE)), 
+                data = resil_mod$data)
+emt
+pairs(emt, by = "tree_treatment")   
+pairs(emt, by = "needle_age")  
+
+moddat <- getData(resil_mod)
+
+newdat <- expand.grid(
+  cum_stress_M0 = seq(min(moddat$cum_stress_M0, na.rm = TRUE),
+                             max(moddat$cum_stress_M0, na.rm = TRUE),
+                             length.out = 100),
+  dayPPFD = mean(moddat$dayPPFD, na.rm = TRUE),
+  max_airtemp_primet_trmt = mean(moddat$max_airtemp_primet_trmt, na.rm = TRUE),
+  needle_age = na.omit(unique(moddat$needle_age)),
+  tree_treatment = na.omit(unique(moddat$tree_treatment))
+)
+
+sum(is.na(newdat))  # should be 0 now
+
+names(newdat)
+
+newdat$pred <- predict(resil_mod, newdata = newdat, level = 0)
+
+
+ggplot(newdat, aes(x = cum_stress_M0, y = pred, color = needle_age)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  labs(y = "Predicted resilience", x = "Cumulative Stress degree hours") +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept=1, lty="dashed", color="gray34")+
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "Needle age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "Needle age") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+emt2 <- emtrends(resil_mod, ~ needle_age * tree_treatment,
+                var = "max_airtemp_primet_trmt",
+                at = list(stress_deg_hour_trmt = mean(resil_mod$data$stress_deg_hour_trmt, na.rm = TRUE)), 
+                data = resil_mod$data)
+
+pairs(emt2, by = "tree_treatment")   
+pairs(emt2, by = "needle_age")  
+
+
+newdat2 <- expand.grid(
+  max_airtemp_primet_trmt = seq(min(moddat$max_airtemp_primet_trmt, na.rm = TRUE),
+                             max(moddat$max_airtemp_primet_trmt, na.rm = TRUE),
+                             length.out = 100),
+  cum_stress_M0 = mean(moddat$cum_stress_M0, na.rm = TRUE),
+  dayPPFD = mean(moddat$dayPPFD, na.rm=TRUE),
+  needle_age = na.omit(unique(moddat$needle_age)),
+  tree_treatment = na.omit(unique(moddat$tree_treatment))
+)
+
+sum(is.na(newdat2)) 
+
+newdat2$pred <- predict(resil_mod, newdata = newdat2, level = 0)
+
+
+ggplot(newdat2, aes(x = max_airtemp_primet_trmt, y = pred, color = needle_age)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  labs(y = "Predicted resilience", x = "Maximum Airtemperature") +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept=1, lty="dashed", color="gray34")+
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "Needle age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "Needle age") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+#### Resistance
+anova(resis_mod)
+
+moddat2 <- getData(resis_mod)
+
+sd_mean_vpd <- sd(moddat2$mean_vpd_primet_trmt, na.rm = TRUE)
+mean_mean_vpd <- mean(moddat2$mean_vpd_primet_trmt, na.rm = TRUE)
+
+emt_vpd <- emtrends(resis_mod, ~ mean_vpd_primet_trmt, var = "max_airtemp_primet_trmt",
+                    at = list(mean_vpd_primet_trmt = mean_mean_vpd + c(-1, 0, 1) * sd_mean_vpd), data = resis_mod$data)
+emt_vpd
+
+
+vpd_seq <- seq(min(moddat2$mean_vpd_primet_trmt, na.rm = TRUE),
+               max(moddat2$mean_vpd_primet_trmt, na.rm = TRUE),
+               length.out = 100)
+
+emm_vpd <- emmeans(resis_mod,
+                   ~ mean_vpd_primet_trmt + needle_age | tree_treatment,
+                   at = list(
+                     mean_vpd_primet_trmt     = vpd_seq,
+                     max_airtemp_primet_trmt  = mean(moddat2$max_airtemp_primet_trmt, na.rm = TRUE),
+                     min_airtemp_primet_trmt      = mean(moddat2$min_airtemp_primet_trmt, na.rm = TRUE),
+                     cum_stress_M0            = mean(moddat2$cum_stress_M0, na.rm = TRUE)
+                   ),
+                   data = moddat2)
+
+emm_df_vpd <- as.data.frame(emm_vpd)
+
+vpd_center <- mean(tree_cleaned2$mean_vpd_primet_trmt, na.rm = TRUE)
+vpd_scale  <- sd(tree_cleaned2$mean_vpd_primet_trmt, na.rm = TRUE)
+
+emm_df_vpd$vpd_original <- emm_df_vpd$mean_vpd_primet_trmt * vpd_scale + vpd_center
+
+ggplot(emm_df_vpd, aes(x = vpd_original,
+                       y = emmean,
+                       color = needle_age,
+                       fill  = needle_age,
+                       group = needle_age)) +
+  
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL),
+              alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  geom_hline(yintercept = 1, lty = "dashed", color = "gray34") +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name  = "Needle age") +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name  = "Needle age") +
+  
+  labs(x = "Mean treatment VPD (kPa)",
+       y = "Predicted resistance") +
+  
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+mintemp_seq <- seq(min(moddat2$min_airtemp_primet_trmt, na.rm = TRUE),
+               max(moddat2$min_airtemp_primet_trmt, na.rm = TRUE),
+               length.out = 100)
+
+emm_min_airtemp <- emmeans(resis_mod,
+                   ~ min_airtemp_primet_trmt + needle_age | tree_treatment,
+                   at = list(
+                     min_airtemp_primet_trmt     = mintemp_seq,
+                     max_airtemp_primet_trmt  = mean(moddat2$max_airtemp_primet_trmt, na.rm = TRUE),
+                     mean_vpd_primet_trmt      = mean(moddat2$mean_vpd_primet_trmt, na.rm = TRUE),
+                     cum_stress_M0            = mean(moddat2$cum_stress_M0, na.rm = TRUE)
+                   ),
+                   data = moddat2)
+
+emm_df_min_airtemp <- as.data.frame(emm_min_airtemp)
+
+mintemp_center <- mean(tree_cleaned2$min_airtemp_primet_trmt, na.rm = TRUE)
+mintemp_scale  <- sd(tree_cleaned2$min_airtemp_primet_trmt, na.rm = TRUE)
+
+emm_df_min_airtemp$min_airtemp_original <- emm_df_min_airtemp$min_airtemp_primet_trmt * mintemp_scale + mintemp_center
+
+ggplot(emm_df_min_airtemp, aes(x = min_airtemp_original,
+                       y = emmean,
+                       color = needle_age,
+                       fill  = needle_age,
+                       group = needle_age)) +
+  
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL),
+              alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  geom_hline(yintercept = 1, lty = "dashed", color = "gray34") +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name  = "Needle age") +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name  = "Needle age") +
+  
+  labs(x = "Minimum airtemp during treatment (C)",
+       y = "Predicted resistance") +
+  
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+cum_seq <- seq(min(moddat2$cum_stress_M0, na.rm = TRUE),
+               max(moddat2$cum_stress_M0, na.rm = TRUE),
+               length.out = 100)
+
+emm_cum <- emmeans(resis_mod,
+                   ~ cum_stress_M0 + needle_age | tree_treatment,
+                   at = list(
+                     cum_stress_M0     = cum_seq,
+                     max_airtemp_primet_trmt  = mean(moddat2$max_airtemp_primet_trmt, na.rm = TRUE),
+                     min_airtemp_primet_trmt  = mean(moddat2$min_airtemp_primet_trmt, na.rm = TRUE),
+                     mean_vpd_primet_trmt     = mean(moddat2$mean_vpd_primet_trmt, na.rm = TRUE)
+                   ),
+                   data = moddat2)
+
+emm_df_cum <- as.data.frame(emm_cum)
+
+cum_center <- mean(tree_cleaned2$cum_stress_M0, na.rm = TRUE)
+cum_scale  <- sd(tree_cleaned2$cum_stress_M0, na.rm = TRUE)
+
+emm_df_cum$cum_original <- emm_df_cum$cum_stress_M0 * cum_scale + cum_center
+
+ggplot(emm_df_cum, aes(x = cum_original,
+                       y = emmean,
+                       color = needle_age,
+                       fill  = needle_age,
+                       group = needle_age)) +
+  
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL),
+              alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  geom_hline(yintercept = 1, lty = "dashed", color = "gray34") +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name  = "Needle age") +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name  = "Needle age") +
+  
+  labs(x = "Cumulative stress degree hours",
+       y = "Predicted resistance") +
+  
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+
+#################
+anova(rec_mod)
+
+moddat3 <- getData(rec_mod)
+
+temp_seq <- seq(min(moddat3$max_airtemp_primet_trmt, na.rm = TRUE),
+               max(moddat3$max_airtemp_primet_trmt, na.rm = TRUE),
+               length.out = 100)
+
+emm_temp <- emmeans(rec_mod,
+                   ~ max_airtemp_primet_trmt + needle_age | tree_treatment,
+                   at = list(
+                     max_airtemp_primet_trmt   = temp_seq,
+                     mean_airtemp_primet_trmt  = mean(moddat3$mean_airtemp_primet_trmt, na.rm = TRUE),
+                     min_airtemp_primet_trmt   = mean(moddat3$min_airtemp_primet_trmt, na.rm = TRUE),
+                     stress_deg_hour_trmr      = mean(moddat3$stress_deg_hour_trmt, na.rm = TRUE)
+                   ),
+                   data = moddat3)
+
+emm_df_temp <- as.data.frame(emm_temp)
+
+
+ggplot(emm_df_temp, aes(x = max_airtemp_primet_trmt,
+                       y = emmean,
+                       color = needle_age,
+                       fill  = needle_age,
+                       group = needle_age)) +
+  
+  geom_ribbon(aes(ymin = lower.CL, ymax = upper.CL),
+              alpha = 0.2, color = NA) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  geom_hline(yintercept = 1, lty = "dashed", color = "gray34") +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name  = "Needle age") +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name  = "Needle age") +
+  
+  labs(x = "Maximum treatment temperature (C)",
+       y = "Predicted recovery one day post-heat") +
+  
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+######
+## Raster plots
+PSIImod <- lightPSII$final_model
+anova(PSIImod)
+vif(PSIImod)
+  
+to_scaled <- function(x, var) (x - scale_params[[paste0(var, "_mean")]]) / scale_params[[paste0(var, "_sd")]]
+scale_vars <- all.vars(formula(PSIImod))[-1]
+scale_vars <- setdiff(scale_vars, c("needle_age", "tree_treatment", "max_airtemp_lag1"))
+
+scale_params <- bigflur %>%
+  summarise(across(all_of(scale_vars),
+                   list(mean = ~mean(.x, na.rm = TRUE), sd = ~sd(.x, na.rm = TRUE))))
+
+to_scaled <- function(x, var) (x - scale_params[[paste0(var, "_mean")]]) / scale_params[[paste0(var, "_sd")]]
+
+make_heatmap <- function(y_var, y_label, n = 60) {
+  grid <- expand.grid(
+    max_airtemp_lag1_raw = seq(min(bigflur$max_airtemp_lag1, na.rm = TRUE),
+                               max(bigflur$max_airtemp_lag1, na.rm = TRUE), length.out = n),
+    y_raw = seq(min(bigflur[[y_var]], na.rm = TRUE),
+                max(bigflur[[y_var]], na.rm = TRUE), length.out = n),
+    needle_age = unique(bigflur$needle_age),
+    tree_treatment = unique(bigflur$tree_treatment)
+  )
+  names(grid)[names(grid) == "y_raw"] <- paste0(y_var, "_raw")
+  
+  grid$max_airtemp_lag1 <- grid$max_airtemp_lag1_raw
+  
+  grid[[y_var]] <- to_scaled(grid[[paste0(y_var, "_raw")]], y_var)
+  
+  other_vars <- setdiff(scale_vars, c("max_airtemp_lag1", y_var))
+  for (v in other_vars) grid[[v]] <- 0
+  
+  grid$needle_age     <- factor(grid$needle_age, levels = levels(as.factor(bigflur$needle_age)))
+  grid$tree_treatment <- factor(grid$tree_treatment, levels = levels(as.factor(bigflur$tree_treatment)))
+  
+  grid$pred <- predict(PSIImod, newdata = grid, level = 0)
+  
+  ggplot(grid, aes(x = max_airtemp_lag1_raw, y = .data[[paste0(y_var, "_raw")]])) +
+    geom_raster(aes(fill = pred), interpolate = TRUE) +
+    geom_contour(aes(z = pred), breaks = seq(0, 1, by = 0.1),
+                 color = "white", linewidth = 0.3, alpha = 0.6) +
+    scale_fill_viridis_c(name = "Predicted\nFv/Fm", option = "plasma") +
+    facet_grid(tree_treatment ~ needle_age) +
+    labs(x = "Max Air Temp (lag1, °C)", y = y_label,
+         title = paste("max_airtemp_lag1 ×", y_var)) +
+    theme_bw()
+}
+
+cont_partners <- list(
+  midday              = "Midday Water Potential",
+  cum_vpd_hours       = "Cumulative VPD Hours",
+  cum_stress_hours_above_temp = "Cumulative Stress Degree Hours",
+  dayPPFD             = "Day PPFD (umol m-2 s-1)",
+  min_airtemp_lag1    = "Min Air Temp (lag1, °C)",
+  mean_airtemp_lag2   = "Mean Air Temp (lag2, °C)",
+  max_vpd_lag1        = "Max VPD (lag1, kPa)",
+  max_vpd_lag3        = "Max VPD (lag3, kPa)",
+  min_vpd_lag1        = "Min VPD (lag1, kPa)",
+  min_vpd_lag2        = "Min VPD (lag2, kPa)",
+  min_vpd_lag3        = "Min VPD (lag3, kPa)",
+  mean_windspeed_lag1 = "Mean Windspeed (lag1)"
+)
+
+plots_cont <- imap(cont_partners, ~ make_heatmap(.y, .x))
+
+walk(plots_cont, print)
+pdf("~/Masters/Andrews/R_Code/figures/fvfm_heatmaps_all.pdf", width = 8, height = 6)
+walk(plots_cont, print)
+dev.off()
+
+
+bigflur<- bigflur %>%
+  mutate(res=residuals(PSIImod, type="pearson")) 
+
+ggplot(bigflur, aes(x=res)) + 
+  geom_density()
+
+qqnorm(bigflur$res)
+
+
+#RESISTANCE 
+
+cor(tree_cleaned2$max_airtemp_primet_trmt, tree_cleaned2$lag2_max_airtemp_M0, use = "complete.obs")
+cor(tree_cleaned2$max_airtemp_primet_trmt, tree_cleaned2$lag3_max_airtemp_M0, use = "complete.obs")
+cor(tree_cleaned2$max_airtemp_primet_trmt, tree_cleaned2$max_vpd_primet_trmt, use = "complete.obs")
+
+scale_varsresil <- all.vars(formula(resis_mod))[-1]
+scale_varsresil <- setdiff(scale_varsresil, c("needle_age", "tree_treatment", "max_airtemp_primet_trmt"))
+
+scale_paramsresil <- tree_cleaned2 %>%
+  summarise(across(all_of(scale_varsresil),
+                   list(mean = ~mean(.x, na.rm = TRUE), sd = ~sd(.x, na.rm = TRUE))))
+
+to_scaledresil <- function(x, var) (x - scale_paramsresil[[paste0(var, "_mean")]]) / scale_paramsresil[[paste0(var, "_sd")]]
+
+
+# Fit simple regressions predicting each correlated lag var from max_airtemp_primet_trmt,
+# so the grid holds them at REALISTIC values conditional on airtemp, not a fixed average
+lag2_model <- lm(lag2_max_airtemp_M0 ~ max_airtemp_primet_trmt, data = tree_cleaned2)
+lag3_model <- lm(lag3_max_airtemp_M0 ~ max_airtemp_primet_trmt, data = tree_cleaned2)
+vpd_model  <- lm(max_vpd_primet_trmt ~ max_airtemp_primet_trmt, data = tree_cleaned2)
+
+make_heatmap_simple <- function(y_var, y_label, n = 60) {
+  grid <- expand.grid(
+    max_airtemp_primet_trmt = seq(min(tree_cleaned2$max_airtemp_primet_trmt, na.rm = TRUE),
+                                  max(tree_cleaned2$max_airtemp_primet_trmt, na.rm = TRUE), length.out = n),
+    y_raw = seq(min(tree_cleaned2[[y_var]], na.rm = TRUE),
+                max(tree_cleaned2[[y_var]], na.rm = TRUE), length.out = n),
+    needle_age = levels(as.factor(tree_cleaned2$needle_age)),
+    tree_treatment = levels(as.factor(tree_cleaned2$tree_treatment))  # keep both levels IN the grid...
+  )
+  names(grid)[names(grid) == "y_raw"] <- paste0(y_var, "_raw")
+  
+  grid[[y_var]] <- to_scaledresil(grid[[paste0(y_var, "_raw")]], y_var)
+  
+  if (y_var != "lag2_max_airtemp_M0") grid$lag2_max_airtemp_M0 <- to_scaledresil(predict(lag2_model, newdata = grid), "lag2_max_airtemp_M0")
+  if (y_var != "lag3_max_airtemp_M0") grid$lag3_max_airtemp_M0 <- to_scaledresil(predict(lag3_model, newdata = grid), "lag3_max_airtemp_M0")
+  if (y_var != "max_vpd_primet_trmt") grid$max_vpd_primet_trmt <- to_scaledresil(predict(vpd_model, newdata = grid), "max_vpd_primet_trmt")
+  
+  other_vars <- setdiff(scale_varsresil,
+                        c("max_airtemp_primet_trmt", y_var,
+                          "lag2_max_airtemp_M0", "lag3_max_airtemp_M0", "max_vpd_primet_trmt"))
+  for (v in other_vars) grid[[v]] <- 0
+  
+  grid$needle_age     <- factor(grid$needle_age, levels = levels(as.factor(tree_cleaned2$needle_age)))
+  grid$tree_treatment <- factor(grid$tree_treatment, levels = levels(as.factor(tree_cleaned2$tree_treatment)))
+  
+  grid$pred <- predict(resis_mod, newdata = grid, level = 0)
+  
+  # ...then average OUT tree_treatment here, right before plotting
+  grid_avg <- grid %>%
+    group_by(across(all_of(c("max_airtemp_primet_trmt", paste0(y_var, "_raw"))))) %>%
+    summarise(pred = mean(pred, na.rm = TRUE), .groups = "drop")
+  
+  ggplot(grid_avg, aes(x = max_airtemp_primet_trmt, y = .data[[paste0(y_var, "_raw")]])) +
+    geom_raster(aes(fill = pred), interpolate = TRUE) +
+    geom_contour(aes(z = pred), color = "white", linewidth = 0.3, alpha = 0.6) +
+    scale_fill_viridis_c(name = "Predicted Resistance", option = "plasma") +
+    labs(x = "Max Air Temp Treatment (°C)", y = y_label,
+         title = paste("max_airtemp_primet_trmt ×", y_var)) +
+    theme_bw()
+}
+
+anova(resis_mod)
+
+cont_partnersresil <- list(
+  maxPPFD             = "Max PPFD (umol m-2 s-1)",
+  dayPPFD             = "Day PPFD (umol m-2 s-1)",
+  mean_airtemp_primet_trmt = "Mean Air Temp Treatment (C)",
+  max_vpd_primet_trmt = "Max VPD Treatment (kPa)",
+  min_airtemp_primet_trmt = "Minimum Air Temp Treatment (C)",
+  cum_stress_M0       = "Cumulative SDH on Measurement Day 0"
+)
+
+plots_contresil <- imap(cont_partnersresil, ~ make_heatmap_simple(.y, .x))
+
+walk(plots_contresil, print)
+
+pdf("~/Masters/Andrews/R_Code/figures/resistance_heatmaps_all.pdf", width = 8, height = 6)
+walk(plots_contresil, print)
+dev.off()
+
+
+
+## PCA
+pca_block    <- c("midday", "max_airtemp_lag1", "max_vpd_lag1",
+                   "dayPPFD", "maxPPFD", "cum_stress_hours_above_temp", "cum_vpd_hours",
+                   "max_airtemp_lag2", "max_airtemp_lag3",
+                   "mean_airtemp_lag1","mean_airtemp_lag2","mean_airtemp_lag3",
+                   "min_airtemp_lag1","min_airtemp_lag2","min_airtemp_lag3",
+                   "max_vpd_lag1","max_vpd_lag2","max_vpd_lag3",
+                   "mean_vpd_lag1","mean_vpd_lag2","mean_vpd_lag3",
+                   "min_vpd_lag1","min_vpd_lag2","min_vpd_lag3",
+                   "mean_windspeed_lag1")
+
+pca_data <- bigflur %>% select(all_of(pca_block)) %>% filter(complete.cases(.))
+
+# Data should already be scaled (mean 0, sd 1) from your pipeline's scale_env_vars();
+# if working from raw bigflur columns here, scale explicitly first:
+pca_data_scaled <- scale(pca_data)
+
+pca_fit <- prcomp(pca_data_scaled, center = FALSE, scale. = FALSE)  # already scaled above
+
+summary(pca_fit)    
+# Kaiser criterion: keep PCs with eigenvalue > 1 (explains more variance than a single original variable would)
+eigenvalues <- pca_fit$sdev^2
+eigenvalues
+sum(eigenvalues > 1)
+screeplot(pca_fit, type = "lines")
+abline(h=1, lty = 2, col="red")
+print(pca_fit$rotation[, 1:n_pcs], digits = 2)
+
+scree_df <- data.frame(
+  PC = factor(paste0("PC", 1:length(eigenvalues)), levels = paste0("PC", 1:length(eigenvalues))),
+  variance_explained = eigenvalues / sum(eigenvalues) * 100,
+  cumulative = cumsum(eigenvalues) / sum(eigenvalues) * 100
+)
+
+ggplot(scree_df, aes(x = PC)) +
+  geom_col(aes(y = variance_explained), fill = "steelblue", alpha = 0.7) +
+  geom_line(aes(y = cumulative, group = 1), color = "firebrick", linewidth = 1) +
+  geom_point(aes(y = cumulative), color = "firebrick", size = 2) +
+  geom_hline(yintercept = 80, linetype = "dashed", color = "gray40") +
+  labs(x = "Principal Component", y = "% Variance Explained",
+       title = "Scree Plot: Environmental PCA") +
+  theme_bw()
+
+# Attach the chosen PCs back onto the full dataset (matching rows, given filter/complete.cases above)
+n_pcs <- 6   # adjust based on the scree plot / variance threshold
+print(pca_fit$rotation[, 1:n_pcs], digits = 2)
+pc_scores <- as.data.frame(pca_fit$x[, 1:n_pcs])
+names(pc_scores) <- paste0("env_PC", 1:n_pcs)
+
+bigflur_pca <- bigflur %>%
+  filter(complete.cases(select(., all_of(pca_block)))) %>%
+  bind_cols(pc_scores)
+
+resid_model <- lm(cum_vpd_hours ~ cum_stress_hours_above_temp, data = bigflur_pca, na.action = na.exclude)
+bigflur_pca$cum_vpd_hours_resid <- resid(resid_model)
+
+resid_model2 <- lm(max_vpd_lag1 ~ max_airtemp_lag1, data = bigflur_pca, na.action = na.exclude)
+bigflur_pca$max_vpd_lag1_resid <- resid(resid_model2)
+
+scale_factor <- max(bigflur$predawn, na.rm = TRUE) /
+  max(bigflur$max_airtemp_lag1, na.rm = TRUE)
+
+
+
+cor(bigflur$mean_airtemp_lag1, bigflur$max_airtemp_lag1, use = "complete.obs")^2
+
+# Then use cum_vpd_hours_resid in place of cum_vpd_hours in env_vars_pca
+
+env_vars_pca <- c("max_airtemp_lag1", "cum_stress_hours_above_temp", "cum_vpd_hours_resid",
+                  "max_vpd_lag1_resid", paste0("env_PC", 1:n_pcs))
+
+PSII_pca <- run_model_pipeline(
+  data = bigflur_pca,
+  env_vars = env_vars_pca,
+  factors = c("needle_age", "tree_treatment"),
+  factor_env_factors = c("needle_age", "tree_treatment"),
+  response = "FvFm",
+  protected_terms = c("cum_stress_hours_above_temp",
+                      "cum_vpd_hours_resid", "max_vpd_lag1_resid"),
+  protect_from_vif = c("cum_stress_hours_above_temp",
+                       "cum_vpd_hours_resid", "max_vpd_lag1_resid")
+)
+
+vif(PSII_pca$final_model)
+anova(PSII_pca$final_model)
+
+names(coef(PSII_pca$final_model))
+library(tibble)
+
+loadings_df <- as.data.frame(pca_fit$rotation[, 1:n_pcs]) %>%
+  rownames_to_column("variable") %>%
+  pivot_longer(-variable, names_to = "PC", values_to = "loading")
+
+ggplot(loadings_df, aes(x = variable, y = loading, fill = loading > 0)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~PC, ncol = 2) +
+  coord_flip() +
+  scale_fill_manual(values = c("firebrick", "steelblue")) +
+  labs(x = NULL, y = "Loading", title = "PCA Loadings by Component") +
+  theme_bw()
+
+pc_df <- as.data.frame(pca_fit$x[, 1:6]) %>%
+  bind_cols(needle_age = bigflur_pca$needle_age, tree_treatment = bigflur_pca$tree_treatment)
+
+loading_vectors <- as.data.frame(pca_fit$rotation[, 1:6]) %>%
+  rownames_to_column("variable")
+
+scale_arrow <- 9   # adjust so arrows are visible relative to point cloud -- trial and error
+
+ggplot() +
+  geom_point(data = pc_df, aes(x = PC1, y = PC2, color = tree_treatment), alpha = 0.3) +
+  geom_segment(data = loading_vectors,
+               aes(x = 0, y = 0, xend = PC1 * scale_arrow, yend = PC2 * scale_arrow),
+               arrow = arrow(length = unit(0.2, "cm")), color = "black") +
+  geom_text(data = loading_vectors,
+            aes(x = PC1 * scale_arrow * 1.15, y = PC2 * scale_arrow * 1.15, label = variable),
+            size = 3, color = "black") +
+  labs(x = paste0("PC1 (", round(scree_df$variance_explained[1], 1), "%)"),
+       y = paste0("PC2 (", round(scree_df$variance_explained[2], 1), "%)"),
+       title = "Environmental PCA: Scores and Loadings") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+
+summary(pca_fit)
+
+library(broom.mixed)
+
+coef_df <- tidy(PSII_pca$final_model, effects = "fixed", conf.int = TRUE) %>%
+  filter(term != "(Intercept)")
+
+ggplot(coef_df, aes(x = estimate, y = reorder(term, estimate))) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  labs(x = "Standardized coefficient (Fv/Fm)", y = NULL,
+       title = "Model coefficients with 95% CI") +
+  theme_bw()
+
+
+make_effect_plot <- function(x_var, x_label, group_var = NULL, facet_var = NULL, n = 100) {
+  grid <- expand.grid(
+    x_raw = seq(min(bigflur_pca[[x_var]], na.rm = TRUE),
+                max(bigflur_pca[[x_var]], na.rm = TRUE), length.out = n),
+    needle_age = levels(as.factor(bigflur_pca$needle_age)),
+    tree_treatment = levels(as.factor(bigflur_pca$tree_treatment))
+  )
+  names(grid)[names(grid) == "x_raw"] <- paste0(x_var, "_raw")
+  
+  if (x_var == "max_airtemp_lag1") {
+    grid$max_airtemp_lag1 <- to_scaled(grid$max_airtemp_lag1_raw, "max_airtemp_lag1")  # FIXED: scaled
+  } else if (x_var %in% c("cum_vpd_hours_resid", "max_vpd_lag1_resid")) {
+    grid[[x_var]] <- to_scaled_resid(grid[[paste0(x_var, "_raw")]], x_var)
+  } else {
+    grid[[x_var]] <- to_scaled(grid[[paste0(x_var, "_raw")]], x_var)
+  }
+  
+  # Always ensure max_airtemp_lag1 exists in the grid -- held at its SCALED mean (0)
+  # unless it's the variable actually being plotted
+  if (x_var != "max_airtemp_lag1") {
+    grid$max_airtemp_lag1 <- 0   # FIXED: scaled mean, not raw mean
+  }
+  
+  other_vars <- setdiff(scale_vars_pca, c("max_airtemp_lag1", x_var))
+  for (v in other_vars) grid[[v]] <- 0
+  other_resid_vars <- setdiff(c("cum_vpd_hours_resid", "max_vpd_lag1_resid"), x_var)
+  for (v in other_resid_vars) grid[[v]] <- 0
+  
+  grid$needle_age     <- factor(grid$needle_age, levels = levels(as.factor(bigflur_pca$needle_age)))
+  grid$tree_treatment <- factor(grid$tree_treatment, levels = levels(as.factor(bigflur_pca$tree_treatment)))
+  
+  grid$pred <- predict(PSII_pca$final_model, newdata = grid, level = 0)
+  
+  p <- ggplot(grid, aes(x = .data[[paste0(x_var, "_raw")]], y = pred))
+  
+  if (!is.null(group_var)) {
+    p <- p + aes(color = .data[[group_var]]) + geom_line(linewidth = 1)
+  } else {
+    p <- p + geom_line(linewidth = 1, color = "steelblue")
+  }
+  if (!is.null(facet_var)) {
+    p <- p + facet_wrap(as.formula(paste("~", facet_var)))
+  }
+  
+  p + labs(x = x_label, y = "Predicted Fv/Fm",
+           title = paste("Effect of", x_label)) +
+    scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen",
+                                  "control" = "steelblue", "irrigated" = "firebrick")) +
+    theme_bw() + theme(legend.position = "bottom")
+}
+
+# env_PC1: significant main effect + needle_age:tree_treatment:env_PC1 (three-way)
+# -> facet by one factor, color by the other
+make_effect_plot("env_PC1", "Environmental PC1", group_var = "needle_age", facet_var = "tree_treatment")
+
+# env_PC2: same three-way structure
+make_effect_plot("env_PC2", "Environmental PC2", group_var = "needle_age", facet_var = "tree_treatment")
+
+# env_PC3: significant needle_age:env_PC3, no tree_treatment interaction
+make_effect_plot("env_PC3", "Environmental PC3", group_var = "needle_age", facet_var = "tree_treatment")
+
+# env_PC6: significant main effect only, no interactions -> one line, no grouping needed
+make_effect_plot("env_PC6", "Environmental PC6", group_var = "needle_age", facet_var = "tree_treatment")
+
+# cum_stress_hours_above_temp: needle_age:cum_stress_hours_above_temp significant
+make_effect_plot("cum_stress_hours_above_temp", "Cumulative Stress Degree Hours", group_var = "needle_age", facet_var = "tree_treatment")
+
+# cum_vpd_hours_resid: three-way with needle_age:tree_treatment
+make_effect_plot("cum_vpd_hours_resid", "VPD Stress (residual)", group_var = "needle_age", facet_var = "tree_treatment")
+
+# max_vpd_lag1_resid: main effect only in this model (check your actual final formula)
+make_effect_plot("max_vpd_lag1_resid", "Max VPD (residual)", group_var = "needle_age", facet_var = "tree_treatment")
+
+# max_airtemp_lag1: tree_treatment:max_airtemp_lag1 significant
+make_effect_plot("max_airtemp_lag1", "Max Air Temp (lag1, °C)", facet_var = "tree_treatment", group_var = "needle_age")
+
+
+install.packages("ranger")
+library(ranger)
+
+# Build the full candidate set -- same variables you've been feeding run_model_pipeline(),
+# but RF handles raw correlated variables without a VIF problem, so you don't need to
+# pre-filter or PCA them first. This is actually RF's main advantage for you here.
+rf_vars <- c("needle_age", "tree_treatment", "max_airtemp_lag1",
+             "midday", "cum_stress_hours_above_temp", "cum_vpd_hours",
+             "dayPPFD", "maxPPFD",
+             "max_airtemp_lag2", "max_airtemp_lag3",
+             "mean_airtemp_lag1","mean_airtemp_lag2","mean_airtemp_lag3",
+             "min_airtemp_lag1","min_airtemp_lag2","min_airtemp_lag3",
+             "max_vpd_lag1","max_vpd_lag2","max_vpd_lag3",
+             "mean_vpd_lag1","mean_vpd_lag2","mean_vpd_lag3",
+             "min_vpd_lag1","min_vpd_lag2","min_vpd_lag3",
+             "mean_windspeed_lag1")
+
+rf_data <- bigflur %>%
+  select(FvFm, tree_id, all_of(rf_vars)) %>%
+  filter(complete.cases(.))
+
+rf_fit <- ranger(
+  FvFm ~ .,
+  data = rf_data %>% select(-tree_id),   # exclude tree_id as a predictor itself
+  importance = "permutation",             # more reliable than default impurity importance
+  num.trees = 2000,                       # more trees = more stable importance ranking
+  respect.unordered.factors = "order"
+)
+
+# Rank variables by importance
+importance_df <- data.frame(
+  variable = names(importance(rf_fit)),
+  importance = importance(rf_fit)
+) %>%
+  arrange(desc(importance))
+
+print(importance_df)
+
+ggplot(importance_df, aes(x = reorder(variable, importance), y = importance)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(x = NULL, y = "Permutation Importance",
+       title = "Random Forest Variable Importance for FvFm") +
+  theme_bw()
+
+
+install.packages("groupdata2")
+library(groupdata2)  # for group-aware fold creation, or build manually
+
+tree_ids <- unique(rf_data$tree_id)
+set.seed(42)
+folds <- sample(rep(1:5, length.out = length(tree_ids)))  # 5-fold, by tree
+fold_map <- setNames(folds, tree_ids)
+rf_data$fold <- fold_map[as.character(rf_data$tree_id)]
+
+cv_results <- map_dfr(1:5, function(k) {
+  train <- rf_data %>% filter(fold != k) %>% select(-tree_id, -fold)
+  test  <- rf_data %>% filter(fold == k) %>% select(-tree_id, -fold)
+  
+  fit <- ranger(FvFm ~ ., data = train, num.trees = 1000)
+  preds <- predict(fit, data = test)$predictions
+  
+  data.frame(fold = k, rmse = sqrt(mean((test$FvFm - preds)^2)))
+})
+
+cv_results
+mean(cv_results$rmse)
+
+sd(bigflur$FvFm, na.rm = TRUE)
+range(bigflur$FvFm, na.rm = TRUE)
+
+library(purrr)
+
+run_rf_once <- function(seed) {
+  set.seed(seed)
+  fit <- ranger(
+    FvFm ~ .,
+    data = rf_data %>% select(-tree_id, -fold),
+    importance = "permutation",
+    num.trees = 2000,
+    respect.unordered.factors = "order"
+  )
+  data.frame(variable = names(importance(fit)), importance = importance(fit), seed = seed)
+}
+
+stability_runs <- map_dfr(c(1, 42, 123, 777, 2024), run_rf_once)
+
+# Average rank across runs, not just average importance -- rank is what you actually care about
+stability_summary <- stability_runs %>%
+  group_by(seed) %>%
+  mutate(rank = rank(-importance)) %>%
+  ungroup() %>%
+  group_by(variable) %>%
+  summarise(
+    mean_importance = mean(importance),
+    mean_rank = mean(rank),
+    sd_rank = sd(rank),
+    .groups = "drop"
+  ) %>%
+  arrange(mean_rank)
+
+print(stability_summary, n = 26)
+
+ggplot(stability_runs, aes(x = reorder(variable, -importance, FUN = mean), y = importance)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.6) +
+  coord_flip() +
+  labs(x = NULL, y = "Permutation Importance (5 seeds)",
+       title = "RF Importance Stability Across Random Seeds") +
+  theme_bw()
+
+
+
+
+
+
+
+
+
+
+##############################################
+# Residual VPD with air temp
+# Max pairs (R² ~0.92-0.93 -- near total overlap, residual captures the thin independent slice)
+resid_max1 <- lm(max_vpd_lag1 ~ max_airtemp_lag1, data = bigflur, na.action = na.exclude)
+resid_max2 <- lm(max_vpd_lag2 ~ max_airtemp_lag2, data = bigflur, na.action = na.exclude)
+resid_max3 <- lm(max_vpd_lag3 ~ max_airtemp_lag3, data = bigflur, na.action = na.exclude)
+
+# Mean pairs (R² ~0.62-0.67 -- more independent variance retained)
+resid_mean1 <- lm(mean_vpd_lag1 ~ mean_airtemp_lag1, data = bigflur, na.action = na.exclude)
+resid_mean2 <- lm(mean_vpd_lag2 ~ mean_airtemp_lag2, data = bigflur, na.action = na.exclude)
+resid_mean3 <- lm(mean_vpd_lag3 ~ mean_airtemp_lag3, data = bigflur, na.action = na.exclude)
+
+# Cumulative stress pair
+resid_cum <- lm(cum_vpd_hours ~ cum_stress_hours_above_temp, data = bigflur, na.action = na.exclude)
+
+bigflur <- bigflur %>%
+  mutate(
+    max_vpd_lag1_resid  = resid(resid_max1),
+    max_vpd_lag2_resid  = resid(resid_max2),
+    max_vpd_lag3_resid  = resid(resid_max3),
+    mean_vpd_lag1_resid = resid(resid_mean1),
+    mean_vpd_lag2_resid = resid(resid_mean2),
+    mean_vpd_lag3_resid = resid(resid_mean3),
+    cum_vpd_hours_resid = resid(resid_cum)
+  )
+
+# Quick R² check, for your records/methods section
+cat("max1:", summary(resid_max1)$r.squared,
+    "\nmax2:", summary(resid_max2)$r.squared,
+    "\nmax3:", summary(resid_max3)$r.squared,
+    "\nmean1:", summary(resid_mean1)$r.squared,
+    "\nmean2:", summary(resid_mean2)$r.squared,
+    "\nmean3:", summary(resid_mean3)$r.squared,
+    "\ncum:", summary(resid_cum)$r.squared, "\n")
+
+
+rf_vars_resid <- c("needle_age", "tree_treatment", "max_airtemp_lag1",
+                   "midday", "cum_stress_hours_above_temp", "cum_vpd_hours_resid",
+                   "dayPPFD", "maxPPFD", "predawn",
+                   "max_airtemp_lag2", "max_airtemp_lag3",
+                   "mean_airtemp_lag1","mean_airtemp_lag2","mean_airtemp_lag3",
+                   "min_airtemp_lag1","min_airtemp_lag2","min_airtemp_lag3",
+                   "max_vpd_lag1_resid","max_vpd_lag2_resid","max_vpd_lag3_resid",
+                   "mean_vpd_lag1_resid","mean_vpd_lag2_resid","mean_vpd_lag3_resid",
+                   "min_vpd_lag1","min_vpd_lag2","min_vpd_lag3",
+                   "mean_windspeed_lag1")
+
+rf_data_resid <- bigflur %>%
+  select(FvFm, tree_id, all_of(rf_vars_resid)) %>%
+  filter(complete.cases(.))
+
+tree_ids <- unique(rf_data_resid$tree_id)
+set.seed(42)
+folds <- sample(rep(1:5, length.out = length(tree_ids)))
+fold_map <- setNames(folds, tree_ids)
+rf_data_resid$fold <- fold_map[as.character(rf_data_resid$tree_id)]
+
+cv_results_resid <- map_dfr(1:5, function(k) {
+  train <- rf_data_resid %>% filter(fold != k) %>% select(-tree_id, -fold)
+  test  <- rf_data_resid %>% filter(fold == k) %>% select(-tree_id, -fold)
+  fit <- ranger(FvFm ~ ., data = train, num.trees = 1000)
+  preds <- predict(fit, data = test)$predictions
+  data.frame(fold = k, rmse = sqrt(mean((test$FvFm - preds)^2)))
+})
+mean(cv_results_resid$rmse)
+
+rf_fit_resid <- ranger(
+  FvFm ~ ., data = rf_data_resid %>% select(-tree_id, -fold),
+  importance = "permutation", num.trees = 2000,
+  respect.unordered.factors = "order"
+)
+
+importance_df_resid <- data.frame(
+  variable = names(importance(rf_fit_resid)),
+  importance = importance(rf_fit_resid)
+) %>% arrange(desc(importance))
+
+print(importance_df_resid)
+
+
+run_rf_once <- function(seed) {
+  set.seed(seed)
+  fit <- ranger(
+    FvFm ~ .,
+    data = rf_data_resid %>% select(-tree_id, -fold),
+    importance = "permutation",
+    num.trees = 2000,
+    respect.unordered.factors = "order"
+  )
+  data.frame(variable = names(importance(fit)), importance = importance(fit), seed = seed)
+}
+
+stability_runs <- map_dfr(c(1, 42, 123, 303, 777, 1300, 1675, 2024), run_rf_once)
+
+# Average rank across runs, not just average importance -- rank is what you actually care about
+stability_summary <- stability_runs %>%
+  group_by(seed) %>%
+  mutate(rank = rank(-importance)) %>%
+  ungroup() %>%
+  group_by(variable) %>%
+  summarise(
+    mean_importance = mean(importance),
+    mean_rank = mean(rank),
+    sd_rank = sd(rank),
+    .groups = "drop"
+  ) %>%
+  arrange(mean_rank)
+
+print(stability_summary, n = 26)
+
+ggplot(stability_runs, aes(x = reorder(variable, -importance, FUN = mean), y = importance)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.6) +
+  coord_flip() +
+  labs(x = NULL, y = "Permutation Importance (8 seeds)",
+       title = "RF Importance Stability Across Random Seeds") +
+  theme_bw()
+
+pca_block_resid <- c("midday", "predawn", "dayPPFD", "maxPPFD", "max_airtemp_lag1",
+                     "max_airtemp_lag2", "max_airtemp_lag3", "cum_stress_hours_above_temp",
+                     "mean_airtemp_lag1","mean_airtemp_lag2","mean_airtemp_lag3",
+                     "min_airtemp_lag1","min_airtemp_lag2","min_airtemp_lag3",
+                     "max_vpd_lag2_resid", "max_vpd_lag3_resid", "max_vpd_lag1_resid",
+                     "mean_vpd_lag1_resid","mean_vpd_lag2_resid","mean_vpd_lag3_resid",
+                     "min_vpd_lag1","min_vpd_lag2","min_vpd_lag3",
+                     "mean_windspeed_lag1", "cum_vpd_hours_resid")
+
+
+pca_data_resid <- bigflur %>% select(all_of(pca_block_resid)) %>% filter(complete.cases(.))
+pca_data_resid_scaled <- scale(pca_data_resid)
+pca_fit_resid <- prcomp(pca_data_resid_scaled, center = FALSE, scale. = FALSE)
+
+summary(pca_fit_resid)
+eigenvalues_resid <- pca_fit_resid$sdev^2
+sum(eigenvalues_resid > 1)   # Kaiser check -- pick n_pcs from this + cumulative variance
+
+n_pcs <- 7
+pc_scores_resid <- as.data.frame(pca_fit_resid$x[, 1:n_pcs])
+names(pc_scores_resid) <- paste0("env_PC", 1:n_pcs)
+
+pca_fit_resid$rotation
+
+bigflur_pca_resid <- bigflur %>%
+  filter(complete.cases(select(., all_of(pca_block_resid)))) %>%
+  bind_cols(pc_scores_resid)
+
+env_vars_pca_resid <- paste0("env_PC", 1:n_pcs)
+
+loadings_df <- as.data.frame(pca_fit_resid$rotation[, 1:n_pcs]) %>%
+  rownames_to_column("variable") %>%
+  pivot_longer(-variable, names_to = "PC", values_to = "loading")
+
+ggplot(loadings_df, aes(x = variable, y = loading, fill = loading > 0)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~PC, ncol = 3) +
+  coord_flip() +
+  scale_fill_manual(values = c("firebrick", "steelblue")) +
+  labs(x = NULL, y = "Loading", title = "PCA Loadings by Component") +
+  theme_bw()
+
+PSII_pca_resid2 <- run_model_pipeline(
+  data = bigflur_pca_resid,
+  env_vars = env_vars_pca_resid,
+  factors = c("needle_age", "tree_treatment"),
+  factor_env_factors = c("needle_age", "tree_treatment"),
+  response = "FvFm"
+)
+
+vif(PSII_pca_resid$final_model)
+anova(PSII_pca_resid$final_model)
+vif(PSII_pca_resid2$final_model)
+anova(PSII_pca_resid2$final_model)
+
+AIC(PSII_pca$final_model)        # original (cum_vpd_hours residualized only)
+AIC(PSII_pca_resid$final_model)  # new (everything residualized)
+AIC(PSII_pca_resid2$final_model)
+
+coef_dfresid2 <- tidy(PSII_pca_resid2$final_model, effects = "fixed", conf.int = TRUE) %>%
+  filter(term != "(Intercept)")
+
+ggplot(coef_dfresid2, aes(x = estimate, y = reorder(term, estimate))) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  labs(x = "Standardized coefficient (Fv/Fm)", y = NULL,
+       title = "Model coefficients with 95% CI") +
+  theme_bw()
+
+
+# Compare RF importance rankings
+importance_df %>% select(variable, importance) %>%
+  rename(importance_orig = importance) %>%
+  left_join(
+    importance_df_resid %>% select(variable, importance) %>% rename(importance_resid = importance),
+    by = "variable"
+  )
+
+importance_df_resid %>% filter(grepl("_resid$", variable)) %>% arrange(desc(importance))
+vif(PSII_pca_resid$final_model)
+
+
+summary(PSII_pca_resid2$final_model)
+summary(pca_fit_resid)
+
+plot(PSII_pca_resid2$final_model)
+qqnorm(PSII_pca_resid2$final_model)
+hist(resid(PSII_pca_resid2$final_model))
+
+
+final_env_vars <- c("maxPPFD", "dayPPFD", "midday",
+                    "max_airtemp_lag3", "mean_airtemp_lag3",
+                    "mean_airtemp_lag1", "max_airtemp_lag2", "mean_airtemp_lag2",
+                    "min_airtemp_lag3",
+                    "mean_vpd_lag3_resid", "cum_vpd_hours_resid", "max_vpd_lag3_resid")
+
+final_paired_interactions <- list(
+  c("max_airtemp_lag2", "max_airtemp_lag3"),
+  c("mean_airtemp_lag1", "mean_airtemp_lag2"),
+  c("mean_airtemp_lag2", "mean_airtemp_lag3"),
+  c("mean_vpd_lag3_resid", "midday"),
+  c("cum_vpd_hours_resid", "midday")
+)
+
+PSII_rf_final <- run_model_pipeline(
+  data = bigflur,
+  env_vars = final_env_vars,
+  factors = c("needle_age", "tree_treatment"),
+  factor_env_factors = c("needle_age", "tree_treatment"),
+  response = "FvFm",
+  paired_env_interactions = final_paired_interactions,
+  three_way_interactions = TRUE
+)
+
+vif(PSII_rf_final$final_model)
+anova(PSII_rf_final$final_model)
+
+
+# RF-confirmed standalone terms (not included in the PCA block)
+rf_protected <- c("maxPPFD", "max_airtemp_lag3",
+                  "cum_vpd_hours_resid",  "predawn",
+                  "max_vpd_lag3_resid")
+
+# PCA block = everything else from your full residualized candidate set
+pca_block_v3 <- c("midday", "dayPPFD", "mean_vpd_lag3_resid", "mean_airtemp_lag3",
+                  "max_airtemp_lag1", "max_airtemp_lag2",
+                  "mean_airtemp_lag1", "mean_airtemp_lag2",
+                  "min_airtemp_lag1", "min_airtemp_lag2", "min_airtemp_lag3",
+                  "max_vpd_lag1_resid", "max_vpd_lag2_resid",
+                  "mean_vpd_lag1_resid", "mean_vpd_lag2_resid",
+                  "min_vpd_lag1", "min_vpd_lag2", "min_vpd_lag3",
+                  "mean_windspeed_lag1", "cum_stress_hours_above_temp")
+
+pca_data_v3 <- bigflur %>% select(all_of(pca_block_v3)) %>% filter(complete.cases(.))
+pca_fit_v3 <- prcomp(scale(pca_data_v3), center = FALSE, scale. = FALSE)
+
+summary(pca_fit_v3)
+eigenvalues_v3 <- pca_fit_v3$sdev^2
+sum(eigenvalues_v3 > 1)
+
+n_pcs <- 6
+  pc_scores_v3 <- as.data.frame(pca_fit_v3$x[, 1:n_pcs])
+names(pc_scores_v3) <- paste0("env_PC", 1:n_pcs)
+
+bigflur_v3 <- bigflur %>%
+  filter(complete.cases(select(., all_of(c(pca_block_v3, rf_protected))))) %>%
+  bind_cols(pc_scores_v3)
+
+loadings_df <- as.data.frame(pca_fit_v3$rotation[, 1:n_pcs]) %>%
+  rownames_to_column("variable") %>%
+  pivot_longer(-variable, names_to = "PC", values_to = "loading")
+
+ggplot(loadings_df, aes(x = variable, y = loading, fill = loading > 0)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~PC, ncol = 3) +
+  coord_flip() +
+  scale_fill_manual(values = c("firebrick", "steelblue")) +
+  labs(x = NULL, y = "Loading", title = "PCA Loadings by Component") +
+  theme_bw()
+
+
+env_vars_v3 <- c(rf_protected, paste0("env_PC", 1:n_pcs))
+
+PSII_v3 <- run_model_pipeline(
+  data = bigflur_v3,
+  env_vars = env_vars_v3,
+  factors = c("needle_age", "tree_treatment"),
+  factor_env_factors = c("needle_age", "tree_treatment"),
+  response = "FvFm",
+  protected_terms = rf_protected,
+  protect_from_vif = rf_protected,
+  three_way_interactions = TRUE
+)
+
+vif(PSII_v3$final_model)
+anova(PSII_v3$final_model)

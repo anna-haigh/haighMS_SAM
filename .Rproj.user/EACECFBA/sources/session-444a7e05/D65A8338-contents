@@ -1,0 +1,537 @@
+library(tidyverse)
+library(lubridate)
+
+# Read in data
+env <- read.csv("~/Masters/Andrews/Environmental_data/temp_vpd_rh_2025.csv")
+all_env <- read.csv("~/Masters/Andrews/Environmental_data/all_env_data_2025.csv")
+trees <- read.csv("~/Masters/Andrews/big_tree_data.csv")
+wp <- read.csv("~/Masters/Andrews/Environmental_data/2025_hja_wp_dat.csv")
+fluor <- read.csv("~/Masters/Andrews/all_fluorescence_2025.csv")
+canopy <- read.csv("~/Masters/Andrews/Environmental_data/dscmet_421_b_5min_2025.csv")
+leaf <- read.csv("~/Masters/Andrews/Environmental_data/dscmet_421_a_5min_2025.csv")
+
+View(wp)
+
+ggplot(wp, aes(x=date, y=predawn, color = treatment)) + 
+  geom_boxplot()
+# Clean data
+trees <- trees %>%
+  mutate(start_date = mdy(start_date)) %>%
+  mutate(season = as.factor(season)) %>%
+  mutate(tree_id = as.factor(tree_id)) %>%
+  mutate(panel_id = as.factor(panel_id)) %>%
+  mutate(tree_treatment = as.factor(tree_treatment)) %>%
+  mutate(heat_treatment = as.factor(heat_treatment)) %>%
+  mutate(needle_age = as.factor(needle_age)) %>%
+  mutate(measurement = factor(measurement, levels=c("initial", "0","1","7","9","14")))%>%
+  mutate(measurement_date = as.Date(measurement_date, format = "%m/%d/%Y")) %>%
+  select(!c(dur_ab35_primet,ratio_av35_trmt,est_amb_airtemp,max_airtemp_primet_trmt,max_vpd_primet_trmt))
+
+head(trees)
+
+
+fluor <- fluor %>%
+  mutate(start_date = mdy(start_date)) %>%
+  mutate(needle_age = as.factor(needle.age)) %>%
+  mutate(tree_id = as.factor(tree_id)) %>%
+  mutate(measurement = factor(measurement, levels=c("initial", "0","1","7","9","14")))%>%
+  mutate(panel_id = as.factor(panel_id)) %>%
+  mutate(tree_treatment = as.factor(tree_treatment)) 
+
+head(fluor)
+
+tree_info <- trees %>%
+  select(start_date,tree_id,panel_id,tree_treatment,heat_treatment,needle_age,measurement,measurement_date)
+head(tree_info)
+
+all_flu <- merge(fluor, tree_info, by = c("start_date","tree_id","tree_treatment","panel_id","needle_age","measurement","heat_treatment"))
+View(all_flu)
+
+canopy <- canopy[-c(1:2),] 
+canopy <- canopy %>%
+  subset(select = c("Date","WSPD_SNC_MAX_150_0_01","WSPD_SNC_MEAN_150_0_01","WDIR_SNC_MEAN_150_0_01"))
+
+all_env <- left_join(all_env, canopy, by = "Date")
+
+head(leaf)
+leaf <- leaf %>%
+  subset(select = c("Date", "LW_MEAN_3000_0_01","LW_MEAN_4000_0_01","LW_MEAN_5600_0_01"))
+
+all_env <- left_join(all_env, leaf, by = "Date")
+head(all_env)
+
+water25 <- read.csv("~/Masters/Andrews/Environmental_data/primet_230_a_5min_2025.csv")
+names(water25)
+all_env<- left_join(all_env, water25, by = "Date")
+
+env_daily25 <- all_env %>%
+  mutate(
+    day = as.Date(mdy_hm(Date))) %>%
+  group_by(day) %>%
+  summarise(
+    max_airtemp    = max(AIRTEMP_MEAN_150_0_04, na.rm = TRUE),
+    mean_airtemp   = mean(AIRTEMP_MEAN_150_0_04, na.rm = TRUE),
+    min_airtemp    = min(AIRTEMP_MEAN_150_0_04, na.rm = TRUE),
+    max_vpd        = max(VPD_MEAN_150_0_04 * 0.1, na.rm = TRUE),
+    mean_vpd       = mean(VPD_MEAN_150_0_04 * 0.1, na.rm = TRUE),
+    min_vpd        = min(VPD_MEAN_150_0_04 * 0.1, na.rm = TRUE),
+    acc_precip     = max(PRECIP_ACC_100_0_01, na.rm = TRUE),
+    tot_precip     = max(PRECIP_TOT_100_0_01, na.rm = TRUE),
+    max_swe        = max(SWE_MED_0_0_01, na.rm = TRUE),
+    .groups = "drop"
+  )
+head(env_daily)
+winter_temp25 <- env_daily25 %>%
+  filter(between(day, as.Date("2024-12-01"), as.Date("2025-02-28")))
+
+summer_temp25 <- env_daily25 %>%
+  filter(between(day, as.Date("2025-06-01"), as.Date("2025-08-31")))
+
+mean(winter_temp25$mean_airtemp)
+min(winter_temp25$min_airtemp)
+max(winter_temp25$max_airtemp)
+mean(winter_temp25$min_airtemp)
+mean(winter_temp25$max_airtemp)
+max(winter_temp25$acc_precip)
+max(winter_temp25$tot_precip)
+max(winter_temp25$max_swe)
+mean(summer_temp25$mean_airtemp)
+min(summer_temp25$min_airtemp)
+max(summer_temp25$max_airtemp)
+mean(summer_temp25$min_airtemp)
+mean(summer_temp25$max_airtemp)
+max(summer_temp25$acc_precip)
+
+hot25 <- summer_temp25 %>%
+  filter(max_airtemp > 34.9999)
+
+count(hot25)
+
+View(hot25)
+
+unique(all_flu$measurement_date)
+
+
+treehot <- all_flu %>%
+  filter(between(measurement_date, as.Date("2025-08-06"), as.Date("2025-08-20")))
+
+tree322 <- all_flu %>%
+  filter(tree_id == c("322","900"))
+
+unique(tree322$measurement_date)
+View(tree322)
+
+scale_factor <- mean(trees$FvFm, na.rm = TRUE) /
+  (min(summer_temp25$max_airtemp, na.rm = TRUE) + 10)
+
+scale_factor2 <- mean(trees$FvFm, na.rm = TRUE) /
+  max(env_daily25$max_vpd , na.rm = TRUE)
+
+
+initial <- trees %>%
+  filter(measurement == "initial")
+head(initial)
+
+ggplot() +
+  stat_summary(data = all_flu,
+               aes(x = measurement_date, y = Fv.Fm,
+                   color = needle_age, group = needle_age),
+               fun = mean, geom = "line", size = 0.75,
+               position = position_dodge(0.75)) +
+  stat_summary(data = all_flu,
+               aes(x = measurement_date, y = Fv.Fm,
+                   color = needle_age, group = needle_age),
+               fun.data = mean_se, geom = "errorbar", width = 0.75,
+               position = position_dodge(0.75)) +
+  geom_line(data = env_daily25,
+            aes(x = day, y = max_airtemp * scale_factor),
+            color = "firebrick",linetype = "dotted", linewidth = 0.8) +
+  facet_wrap(~tree_treatment) +
+  xlim(c(as.Date("2025-07-16"),as.Date("2025-09-04"))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name  = "Needle age") +
+  scale_y_continuous(
+    name = "Fv/Fm",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Max Airtemp")
+  ) +
+  labs(x = "Date", color = "Needle Age") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggplot(summer_temp25, aes(x=max_airtemp, y=max_vpd)) + 
+  geom_point()
+
+
+ggplot() +
+  stat_summary(data = tree322,
+               aes(x = measurement_date -1, y = Fv.Fm,
+                   color = needle_age, group = needle_age),
+               fun = mean, geom = "line", linewidth = 1,
+               position = position_dodge(0.4)) +
+  stat_summary(data = tree808,
+               aes(x = measurement_date -1, y = Fv.Fm,
+                   color = needle_age, group = needle_age),
+               fun.data = mean_se, geom = "errorbar", width = 0.5,
+               position = position_dodge(0.4)) +
+  geom_line(data = summer_temp25,
+            aes(x = day, y = max_airtemp * scale_factor),
+            color = "firebrick",linewidth = 0.8) +
+  facet_wrap(~tree_id) +
+  xlim(c(as.Date("2025-07-21"),as.Date("2025-08-19"))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name  = "Needle age") +
+  scale_y_continuous(
+    name = "Fv/Fm",
+    sec.axis = sec_axis(~ . / scale_factor, name = "Max Airtemp")
+  ) +
+  labs(x = "Date", color = "Needle Age") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggplot(tree322, aes(x=measurement_date, y=Fv.Fm, color = needle_age, group=needle_age)) + 
+  geom_point() + 
+  facet_wrap(~panel_id)
+
+
+env_clean <- all_env %>%
+  subset(select = c("Date", "AIRTEMP_MEAN_150_0_04", "VPD_MEAN_150_0_04")) %>%
+  mutate(
+    Date_time = mdy_hm(Date),        
+    Date_only = as.Date(Date_time)   
+  ) %>%
+  mutate(vpd_kpa = VPD_MEAN_150_0_04 * 0.1)
+
+
+windows <- trees %>%
+  filter(measurement %in% c("initial", "0")) %>%
+  select(tree_id, panel_id, needle_age, measurement, measurement_date) %>%
+  pivot_wider(names_from = measurement, values_from = measurement_date, names_prefix = "date_") %>%
+  rename(window_start = date_initial, window_end = date_0)
+
+lookup_dates <- unique(trees$measurement_date - 1)
+env_dates    <- unique(daily_env$Date_only)
+
+first_na_idx <- which(is.na(env_clean$AIRTEMP_MEAN_150_0_04))[1]
+if (!is.na(first_na_idx)) {
+  cat("First NA occurs at row", first_na_idx, "-- Date_time:",
+      as.character(env_clean$Date_time[first_na_idx]), "\n")
+  cat("(Everything in a cumsum() AFTER this point becomes NA -- this is\n")
+  cat(" almost certainly why your July 2025 dates come back NA, since\n")
+  cat(" they're well after this point in the Oct 2024-Oct 2025 series.)\n")
+}
+
+env_tracks <- env_clean %>%
+  arrange(Date_time) %>%
+  mutate(
+    interval_hours_control = if_else(
+      !is.na(AIRTEMP_MEAN_150_0_04) & AIRTEMP_MEAN_150_0_04 >= 35, 5/60, 0
+    ),
+    cum_hours_control = cumsum(interval_hours_control),
+    
+    interval_hours_33 = if_else(
+      !is.na(AIRTEMP_MEAN_150_0_04) & AIRTEMP_MEAN_150_0_04 >= 33, 5/60, 0
+    ),
+    extra_hours_35to33 = interval_hours_33 - interval_hours_control,
+    cum_extra_35to33   = cumsum(extra_hours_35to33)
+  ) %>%
+  mutate(
+    interval_vpd_hours = if_else(
+      !is.na(vpd_kpa) & vpd_kpa >=3, 5/60, 0
+    ),
+    cum_vpd_hours = cumsum(interval_vpd_hours)
+  )
+
+daily_env <- env_tracks %>%
+  group_by(Date_only) %>%
+  summarise(
+    cum_hours_control_daily = max(cum_hours_control),
+    cum_extra_35to33_daily  = max(cum_extra_35to33),
+    cum_vpd_hours = max(cum_vpd_hours),
+    .groups = "drop"
+  )
+
+check_dates <- unique(trees$measurement_date - 1)
+still_na <- daily_env %>% filter(Date_only %in% check_dates, is.na(cum_hours_control_daily))
+cat("Dates still NA:", nrow(still_na), "\n")
+if (nrow(still_na) > 0) print(still_na)
+
+trees <- trees %>%
+  left_join(windows, by = c("tree_id", "panel_id", "needle_age")) %>%
+  mutate(
+    lookup_date   = measurement_date - 1,  
+    baseline_date = window_start - 1,      
+    ceiling_date  = window_end - 1          
+  ) %>%
+  left_join(daily_env, by = c("lookup_date" = "Date_only")) %>%
+  left_join(
+    daily_env %>% select(Date_only, extra_baseline = cum_extra_35to33_daily),
+    by = c("baseline_date" = "Date_only")
+  ) %>%
+  left_join(
+    daily_env %>% select(Date_only, extra_ceiling = cum_extra_35to33_daily),
+    by = c("ceiling_date" = "Date_only")
+  ) %>%
+  mutate(
+    extra_baseline = replace_na(extra_baseline, 0),  
+    window_boost = case_when(
+      heat_treatment != "heated" | is.na(window_start)   ~ 0,   
+      lookup_date < window_start                          ~ 0,   
+      lookup_date < window_end                             ~ pmax(0, cum_extra_35to33_daily - extra_baseline),
+      TRUE                                                  ~ pmax(0, extra_ceiling - extra_baseline)  
+    ),
+    cum_stress_hours_above_temp = cum_hours_control_daily + window_boost
+  ) %>%
+  select(-lookup_date, -baseline_date, -ceiling_date, -window_start, -window_end,
+         -cum_hours_control_daily, -cum_extra_35to33_daily,
+         -extra_baseline, -extra_ceiling, -window_boost)
+
+trees %>%
+  filter(heat_treatment == "heated") %>%
+  distinct(tree_id, panel_id) %>%
+  slice(1) %>%
+  inner_join(trees, by = c("tree_id", "panel_id")) %>%
+  select(tree_id, panel_id, measurement, measurement_date, cum_stress_hours_above_temp) %>%
+  arrange(measurement_date) %>%
+  print()
+
+
+trees_trmt <- trees %>%
+  filter(measurement == "0")
+head(trees_trmt)
+names(env_daily)
+
+trees_trmt <- trees_trmt %>%
+  rowwise() %>%
+  mutate(mean_airtemp_primet_trmt = mean(env_daily$mean_airtemp[
+    env_daily$day >= start_date &
+      env_daily$day < measurement_date], na.rm = TRUE) 
+    + if_else(heat_treatment == "heated", 2, 0), 
+    mean_vpd_primet_trmt = mean(env_daily$mean_vpd[
+      env_daily$day >= start_date &
+        env_daily$day < measurement_date], na.rm = TRUE)) %>%
+  mutate(max_airtemp_primet_trmt = mean(env_daily$max_airtemp[
+    env_daily$day >= start_date &
+      env_daily$day < measurement_date], na.rm = TRUE) 
+    + if_else(heat_treatment == "heated", 2, 0), 
+    max_vpd_primet_trmt = mean(env_daily$max_vpd[
+      env_daily$day >= start_date &
+        env_daily$day < measurement_date], na.rm = TRUE)) %>%
+  mutate(min_airtemp_primet_trmt = mean(env_daily$min_airtemp[
+    env_daily$day >= start_date &
+      env_daily$day < measurement_date], na.rm = TRUE), 
+    min_vpd_primet_trmt = mean(env_daily$min_vpd[
+      env_daily$day >= start_date &
+        env_daily$day < measurement_date], na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(start_date, needle_age, tree_id, panel_id, mean_airtemp_primet_trmt, mean_vpd_primet_trmt,
+         max_airtemp_primet_trmt, max_vpd_primet_trmt, min_airtemp_primet_trmt, min_vpd_primet_trmt) 
+
+
+trees <- trees %>%
+  left_join(trees_trmt, by = c("start_date","needle_age", "tree_id","panel_id"))
+
+View(trees)
+
+View(wp)
+
+library(data.table)
+
+wp_dt[tree_id == 117]
+
+wp_dt <- as.data.table(wp)
+wp_dt[, date := dmy(paste0(date, "-2025"))]
+wp_dt <- wp_dt[, .(predawn = mean(predawn, na.rm = TRUE),
+                   midday  = mean(midday, na.rm = TRUE)),
+               by = .(tree_id, date)]
+wp_dt[, `:=`(
+  predawn = fifelse(is.nan(predawn), NA_real_, predawn),
+  midday  = fifelse(is.nan(midday), NA_real_, midday)
+)]
+
+wp_dt <- wp_dt[order(tree_id, date)]
+wp_dt[, `:=`(
+  predawn = nafill(predawn, type = "locf"),
+  midday  = nafill(midday, type = "locf")
+), by = tree_id]
+
+wp_dt
+unique(trees$measurement_date)
+
+trees_dt <- as.data.table(trees)
+
+wp_dt[, tree_id := as.integer(as.character(tree_id))]
+trees_dt[, tree_id := as.integer(as.character(tree_id))]
+
+setkey(wp_dt, tree_id, date)
+setkey(trees_dt, tree_id, measurement_date)
+
+trees_dt <- wp_dt[trees_dt, roll = TRUE, on = .(tree_id, date = measurement_date)]
+setnames(trees_dt, "date", "measurement_date")
+trees_dt[tree_id == 117, .(tree_id, measurement_date, predawn, midday)]
+
+trees <- wp_dt[trees_dt, roll = TRUE, on = .(tree_id, date = measurement_date)]
+setnames(trees, "date", "measurement_date")
+trees <- as_tibble(trees)
+
+trees <- trees %>%
+  mutate(dayPPFD = average_day_lux_HOBO * 0.0185) %>%
+  mutate(maxPPFD = maximum_lux_HOBO * 0.0185)
+
+ggplot(trees, aes(x=measurement, y=Amax, color=factor(start_date))) + 
+  geom_boxplot() + 
+  facet_wrap(~tree_id) +
+  ylim(0,7)
+
+trees_short <- trees %>%
+  select(tree_id, measurement_date, predawn, midday, start_date, season, 
+         panel_id, tree_treatment, heat_treatment, needle_age, measurement,
+         FvFm, Amax, cum_stress_hours_above_temp, cum_vpd_hours, dayPPFD, maxPPFD,
+         mean_airtemp_primet_trmt, mean_vpd_primet_trmt,
+         max_airtemp_primet_trmt, max_vpd_primet_trmt, min_airtemp_primet_trmt, min_vpd_primet_trmt)
+
+
+env_indexed <- env_daily %>%
+  complete(day = seq.Date(min(day), max(day), by = "day")) %>%  # fill any gaps in the daily sequence
+  arrange(day) %>%
+  mutate(across(
+    c(max_airtemp, mean_airtemp, min_airtemp, max_vpd, mean_vpd, min_vpd, max_windspeed, 
+      mean_windspeed),
+    list(lag1 = ~ dplyr::lag(.x, 1),
+         lag2 = ~ dplyr::lag(.x, 2),
+         lag3 = ~ dplyr::lag(.x, 3)),
+    .names = "{.col}_{.fn}"
+  ))
+
+trees_short <- left_join(trees_short, env_indexed, by = c("measurement_date" = "day"))
+
+trees_short <- trees_short %>%
+  mutate(tree_id = factor(tree_id))
+
+trees_short <- trees_short %>%
+  left_join(windows, by = c("tree_id", "panel_id", "needle_age"))
+
+boost_if_heated <- function(value, date, heat_treatment, window_start, window_end) {
+  in_window <- heat_treatment == "heated" &
+    !is.na(window_start) & !is.na(window_end) &
+    date >= window_start & date < window_end
+  value + if_else(in_window, 2, 0)
+}
+
+trees_short <- trees_short %>%
+  mutate(
+    max_airtemp       = boost_if_heated(max_airtemp,       measurement_date,     heat_treatment, window_start, window_end),
+    mean_airtemp      = boost_if_heated(mean_airtemp,      measurement_date,     heat_treatment, window_start, window_end),
+    max_airtemp_lag1  = boost_if_heated(max_airtemp_lag1,  measurement_date - 1, heat_treatment, window_start, window_end),
+    mean_airtemp_lag1 = boost_if_heated(mean_airtemp_lag1, measurement_date - 1, heat_treatment, window_start, window_end),
+    max_airtemp_lag2  = boost_if_heated(max_airtemp_lag2,  measurement_date - 2, heat_treatment, window_start, window_end),
+    mean_airtemp_lag2 = boost_if_heated(mean_airtemp_lag2, measurement_date - 2, heat_treatment, window_start, window_end),
+    max_airtemp_lag3  = boost_if_heated(max_airtemp_lag3,  measurement_date - 3, heat_treatment, window_start, window_end),
+    mean_airtemp_lag3 = boost_if_heated(mean_airtemp_lag3, measurement_date - 3, heat_treatment, window_start, window_end)
+  ) %>%
+  select(-window_start, -window_end)
+
+View(trees_short)
+
+trees_short$max_min_lag1 <- trees_short$max_airtemp_lag1 - trees_short$min_airtemp_lag1
+trees_short$max_min_lag2 <- trees_short$max_airtemp_lag2 - trees_short$min_airtemp_lag2
+trees_short$max_min_lag3 <- trees_short$max_airtemp_lag3 - trees_short$min_airtemp_lag3
+
+write.csv(trees_short, "~/Masters/Andrews/timeseries_fluorescence_2025.csv", row.names=FALSE)
+
+short_info <- trees_short %>%
+  select(-FvFm)
+names(fluor)
+fluor <- fluor %>%
+  rename(FvFm = Fv.Fm) %>%
+  select(-needle.age)
+
+mega_tree <- merge(fluor, short_info, by = c("start_date","tree_treatment","tree_id","heat_treatment","panel_id","measurement","needle_age"))
+head(mega_tree)
+write.csv(mega_tree, "~/Masters/Andrews/big_fluorescence_series_2025.csv", row.names = FALSE)
+# Recovery calculations
+names(trees_short)
+flurrr <- trees_short %>%
+  filter(measurement == "initial" | measurement == "0" | measurement == "1" | measurement == "7" | measurement == "14") %>%
+  group_by(measurement, start_date, season, tree_id, panel_id, tree_treatment, heat_treatment, needle_age) %>%
+  summarize(mean_FvFm = mean(FvFm, na.rm=TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = measurement, values_from = mean_FvFm, names_prefix = "M")
+
+flurrr <- flurrr %>%
+  mutate(Resistance = M0 / Minitial) %>%
+  mutate(Resilience = (M1 - M0)/ (Minitial - M0)) %>%
+  mutate(Resilience7 = (M7 - M0)/ (Minitial - M0)) %>%
+  mutate(Day1_Recovery = M1 / M0) %>%
+  mutate(Day7_Recovery = M7 / M0) %>%
+  mutate(Day14_Recovery = M14 / M0)
+View(flurrr)
+
+write.csv(flurrr, "~/Masters/Andrews/trees_rrr_2025.csv", row.names = FALSE)
+
+
+# Env. summaries
+View(trees_short)
+envsum <- trees_short %>%
+  filter(measurement %in% c("initial", "0", "1", "7", "14")) %>%
+  group_by(measurement, start_date, season, tree_id, panel_id, tree_treatment, heat_treatment, needle_age,
+           dayPPFD, maxPPFD, mean_airtemp_primet_trmt, max_airtemp_primet_trmt, min_airtemp_primet_trmt,
+           mean_vpd_primet_trmt, max_vpd_primet_trmt) %>%
+  summarize(cum_stress = mean(cum_stress_hours_above_temp, na.rm=TRUE),
+            cum_vpd_stress = mean(cum_vpd_hours, na.rm = TRUE),
+            lag1_max_airtemp = mean(max_airtemp_lag1, na.rm = TRUE),
+            lag2_max_airtemp = mean(max_airtemp_lag2, na.rm = TRUE),
+            lag3_max_airtemp = mean(max_airtemp_lag3, na.rm = TRUE),
+            lag1_max_vpd     = mean(max_vpd_lag1, na.rm = TRUE),
+            lag2_max_vpd     = mean(max_vpd_lag2, na.rm = TRUE),
+            lag3_max_vpd     = mean(max_vpd_lag3, na.rm = TRUE),
+            lag1_mean_airtemp = mean(mean_airtemp_lag1, na.rm = TRUE),
+            lag2_mean_airtemp = mean(mean_airtemp_lag2, na.rm = TRUE),
+            lag3_mean_airtemp = mean(mean_airtemp_lag3, na.rm = TRUE),
+            lag1_mean_vpd     = mean(mean_vpd_lag1, na.rm = TRUE),
+            lag2_mean_vpd     = mean(mean_vpd_lag2, na.rm = TRUE),
+            lag3_mean_vpd     = mean(mean_vpd_lag3, na.rm = TRUE),
+            lag1_min_airtemp = mean(min_airtemp_lag1, na.rm = TRUE),
+            lag2_min_airtemp = mean(min_airtemp_lag2, na.rm = TRUE),
+            lag3_min_airtemp = mean(min_airtemp_lag3, na.rm = TRUE),
+            lag1_min_vpd     = mean(min_vpd_lag1, na.rm = TRUE),
+            lag2_min_vpd     = mean(min_vpd_lag2, na.rm = TRUE),
+            lag3_min_vpd     = mean(min_vpd_lag3, na.rm = TRUE),
+            lag1_max_windspeed = mean(max_windspeed_lag1, na.rm = TRUE),
+            lag2_max_windspeed = mean(max_windspeed_lag2, na.rm = TRUE),
+            lag3_max_windspeed = mean(max_windspeed_lag3, na.rm = TRUE),
+            lag1_mean_windspeed = mean(mean_windspeed_lag1, na.rm = TRUE),
+            lag2_mean_windspeed = mean(mean_windspeed_lag2, na.rm = TRUE),
+            lag3_mean_windspeed = mean(mean_windspeed_lag3, na.rm = TRUE),
+            lag1_max_LW_4000 = mean(max_LW_4000_lag1, na.rm = TRUE),
+            lag2_max_LW_4000 = mean(max_LW_4000_lag2, na.rm = TRUE),
+            lag3_max_LW_4000 = mean(max_LW_4000_lag3, na.rm = TRUE),
+            lag1_mean_LW_4000 = mean(mean_LW_4000_lag1, na.rm = TRUE),
+            lag2_mean_LW_4000 = mean(mean_LW_4000_lag2, na.rm = TRUE),
+            lag3_mean_LW_4000 = mean(mean_LW_4000_lag3, na.rm = TRUE),
+            lag1_max_min = mean(max_min_lag1, na.rm = TRUE),
+            lag2_max_min = mean(max_min_lag2, na.rm = TRUE),
+            lag3_max_min = mean(max_min_lag3, na.rm = TRUE),
+            .groups = "drop") %>%
+  pivot_wider(
+    names_from = measurement,
+    values_from = c(cum_stress, cum_vpd_stress, lag1_max_airtemp, lag2_max_airtemp, lag3_max_airtemp, 
+                    lag1_max_vpd, lag2_max_vpd, lag3_max_vpd, lag1_mean_airtemp, lag2_mean_airtemp, 
+                    lag3_mean_airtemp, lag1_mean_vpd, lag2_mean_vpd, lag3_mean_vpd,
+                    lag1_min_airtemp, lag2_min_airtemp, lag3_min_airtemp, 
+                    lag1_min_vpd, lag2_min_vpd, lag3_min_vpd,
+                    lag1_max_windspeed, lag2_max_windspeed, lag3_max_windspeed,
+                    lag1_mean_windspeed, lag2_mean_windspeed, lag3_mean_windspeed,
+                    lag1_max_LW_4000, lag2_max_LW_4000, lag3_max_LW_4000,
+                    lag1_mean_LW_4000, lag2_mean_LW_4000, lag3_mean_LW_4000,
+                    lag1_max_min, lag2_max_min, lag3_max_min),
+    names_glue = "{.value}_M{measurement}"
+  )
+
+
+fulldata <- left_join(flurrr, envsum, by=c("start_date", "season", "tree_id", "panel_id", "tree_treatment", "heat_treatment", "needle_age"))
+
+View(fulldata)
+
+write.csv(fulldata, "~/Masters/Andrews/cleaned_data_final_2025.csv", row.names = FALSE)
+
+
+
