@@ -13,12 +13,10 @@ water <- read.csv("data/hja_wp_dat.csv")
 fluor <- fluor %>%
   mutate(start_date = mdy(start_date),
          needle_age = needle.age,
-         tree_id = as.factor(tree_id),
+         tree_id = as.character(tree_id),
          measurement = as.factor(measurement),
          panel_id = as.factor(panel_id),
-         tree_treatment = as.factor(tree_treatment)) 
-
-head(fluor)
+         tree_treatment = as.character(tree_treatment)) 
 
 tree_info <- tree %>%
   mutate(start_date = mdy(start_date),
@@ -27,6 +25,7 @@ tree_info <- tree %>%
          maxPPFD = (maximum_lux_HOBO * 0.0185)) %>%
   select(measurement_date,tree_id,panel_id,tree_treatment,heat_treatment,needle_age,measurement,dayPPFD, maxPPFD, start_date)
 
+View(tree_info)
 end_dates <- tree_info %>%
   filter(measurement == 0) %>%
   distinct(tree_id, panel_id, end_date = measurement_date)
@@ -36,10 +35,9 @@ tree_info <- tree_info %>%
 
 all_flu <- merge(fluor, tree_info, by = c("start_date","tree_id","tree_treatment","panel_id","needle_age","measurement","heat_treatment"))
 
-all_flu <- all_flu %>%
-  mutate(collect_time = ymd_hm(paste(measurement_date, "09:00"),
-                               tz = "America/Los_Angeles"))
-head(all_flu)
+View(all_flu)
+
+unique(all_flu$start_date)
 
 
 #Water potential data set
@@ -47,9 +45,7 @@ head(water)
 water <- water %>%
   filter(spp == "Pseudotsuga menziesii") %>%
   mutate(date= dmy(paste(date, 2025)), 
-         tree_treatment = case_when(treatment == "n" ~ "control", treatment == "i" ~ "irrigated"),
-         predawn_time  = ymd_hm(paste(date, "04:00"), tz = "America/Los_Angeles"),
-         midday_time   = ymd_hm(paste(date, "13:00"), tz = "America/Los_Angeles")) %>%
+         tree_treatment = case_when(treatment == "n" ~ "control", treatment == "i" ~ "irrigated")) %>%
   rename(tree_id = id) %>%
   select(-treatment, -spp, -key)
 
@@ -94,13 +90,14 @@ env_sum <- env_clean %>%
 head(env_sum)
 head(water)
 
-joined <- env_sum %>%
-  left_join(water, by = c("Date_only" = "date"))
+tree_data <- water %>%
+  full_join(all_flu, by = c("date" = "measurement_date", "tree_id", "tree_treatment")) %>%
+  rename(Date_only = date)
 
-all_join <- joined %>%
-  left_join(all_flu, by = c("Date_only" = "measurement_date","tree_id","tree_treatment"))
+all_join <- env_sum %>%
+  left_join(tree_data, by = "Date_only")
 
-head(all_join)
+View(all_join)
 
 adjusted <- all_join %>%
   mutate(
@@ -120,10 +117,16 @@ SAM_data <- adjusted %>%
          panel_on = start_date,
          panel_off = end_date,
          FvFm = Fv.Fm) %>%
-  select(-predawn_time, -midday_time, -collect_time, -needle.age)
+  select(-needle.age)
 
 names(SAM_data)
+
+View(SAM_data)
 
 SAM_data <- SAM_data[, c(1,2,24,3,25,4,5,6,7,8,9,12,15,14,17,21,22,13,23,16,10,11,18,19,20)]
 
 write.csv(SAM_data, "data/SAM_data.csv", row.names=FALSE)
+
+
+unique(SAM_data$panel_on)
+

@@ -1,0 +1,1356 @@
+library(tidyverse)
+library(lmerTest)
+library(emmeans)
+library(nlme)
+
+
+## Read in the data
+nsc <- read.csv("Masters/NSC/nsc_810_729.csv")
+glu <- read.csv("Masters/NSC/729_810_glucose.csv")
+full <- read.csv("Masters/Andrews/big_tree_data.csv")
+temp <- read.csv("Masters/Andrews/Environmental_data/primet_temp.csv")
+
+temp <- temp %>%
+  rename(., measurement_date = Date) %>%
+  rename(., max_temp = Max.of.AIRTEMP_MEAN_150_0_04) %>%
+  rename(., max_VPD = Max.of.VPD_MEAN_150_0_04) %>%
+  mutate(
+    measurement_date = as.Date(measurement_date, format = "%m/%d/%Y")
+  )
+
+full<- full %>%  
+  mutate(
+    measurement_date = as.Date(measurement_date, format = "%m/%d/%Y"))
+
+
+full <- left_join(full, temp, by = "measurement_date")
+
+
+## Correct absorbency measurements using blanks and water plates
+nsc<- nsc %>%
+  mutate(sugar_ghk_corr=sugar_ghk_75 - sugar_ghk_blank) %>%
+  mutate(sugar_h2o_corr=sugar_h2o_75 - sugar_h2o_blank) %>%
+  mutate(invertase_ghk_corr = invertase_ghk_75 - invertase_ghk_blank) %>%
+  mutate(invertase_h2o_corr = invertase_h2o_75 - invertase_h2o_blank) %>%
+  mutate(amg_ghk_corr = amg_ghk_45 - amg_ghk_blank) %>%
+  mutate(amg_h2o_corr = amg_h2o_45 - amg_h2o_blank) %>%
+  mutate(od_sugar_ghk = sugar_ghk_corr - sugar_h2o_corr) %>%
+  mutate(od_invertase = invertase_ghk_corr - invertase_h2o_corr) %>%
+  mutate(od_amg = amg_ghk_corr - amg_h2o_corr)
+
+glu <- glu %>%
+  mutate(sugar_ghk_corr=sugar_ghk_75 - sugar_ghk_blank) %>%
+  mutate(sugar_h2o_corr=sugar_h2o_75 - sugar_h2o_blank) %>%
+  mutate(invertase_ghk_corr = invertase_ghk_75 - invertase_ghk_blank) %>%
+  mutate(invertase_h2o_corr = invertase_h2o_75 - invertase_h2o_blank) %>%
+  mutate(amg_ghk_corr = amg_ghk_45 - amg_ghk_blank) %>%
+  mutate(amg_h2o_corr = amg_h2o_45 - amg_h2o_blank) %>%
+  mutate(od_sugar_ghk = sugar_ghk_corr - sugar_h2o_corr) %>%
+  mutate(od_invertase = invertase_ghk_corr - invertase_h2o_corr) %>%
+  mutate(od_amg = amg_ghk_corr - amg_h2o_corr)
+
+
+## Separate plates for calculations
+nsc1<-filter(nsc, plate=="1")
+nsc2<-filter(nsc, plate=="2")
+nsc3<-filter(nsc, plate=="3") %>%
+  filter(!well %in% c("f2","f3","f4","f5","f6","f7","f8","f9","g2","g3","g4","g5","g6","g7","g8","g9"))
+glu1<-filter(glu, Plate=="1")
+glu2<-filter(glu, Plate=="2")
+glu3<-filter(glu, Plate=="3")
+
+
+## Check for linearity in serial dilutions
+plot(glu1$glucose_conc, glu1$od_invertase)
+plot(glu2$glucose_conc, glu2$od_sugar_ghk)
+plot(glu3$glucose_conc, glu3$od_sugar_ghk)
+
+## Remove weird value
+head(glu3)
+glu3<-glu3[-c(4),]
+head(glu3)
+
+## Save slope and intercept parameters for each plate
+p1eq<-lm(od_invertase ~ glucose_conc, data=glu1)
+p1eq
+p1int<-0.01449
+p1slope<-1.15462
+
+p1eq2<-lm(od_amg ~ glucose_conc, data=glu1)
+p1eq2
+p1int2<-(-0.001143)
+p1slope2<-(1.2727)
+
+p2eq<-lm(od_sugar_ghk ~ glucose_conc, data=glu2)
+p2int<-0.0678
+p2slope<-1.3255
+
+p2eq2<-lm(od_amg ~ glucose_conc, data=glu2)
+p2eq2
+p2int2<-0.02691
+p2slope2<-1.47691
+
+p3eq<-lm(od_sugar_ghk ~ glucose_conc, data=glu3)
+p3eq
+p3int<-(-0.09473)
+p3slope<-1.81333
+
+p3eq2<-lm(od_amg ~ glucose_conc, data=glu3)
+p3eq2
+p3int2<-(-0.09262)
+p3slope2<-1.69054
+
+## Calculate dilution factor: df=(total well volume/well sample aliquot) * (H2O volume added to dry tissue / supernatant on sugar plate)
+df1<-((220/20)*(1600/120))
+df2<-((140/20)*(1000/120)*2) # Used 120uL ghk for plates 2 and 3
+df21<-((220/20)*(1000/120)*2) 
+
+## Sugar calculations
+nsc1<- nsc1 %>%
+  mutate(glu_fru_well=(od_sugar_ghk - p1int)/p1slope) %>%
+  mutate(glu_fru_ex = glu_fru_well * df1) %>%
+  mutate(mg_glu_fru = (glu_fru_ex * 1.6)/mass_mg) %>%
+  mutate(sol_sug_well=(od_invertase - p1int)/p1slope) %>%
+  mutate(sol_sug_ex = sol_sug_well * df1) %>%
+  mutate(mg_sol_sug = ((sol_sug_ex *1.6)/mass_mg) + 2.389) %>%
+  mutate(mg_sucrose = mg_sol_sug - mg_glu_fru) %>%
+  mutate(nsc_well=(od_amg - p1int2)/p1slope2) %>%
+  mutate(nsc_ex = nsc_well * df21) %>%
+  mutate(mg_nsc = (nsc_ex * 1.6)/mass_mg) %>%
+  mutate(mg_starch = mg_nsc - mg_sol_sug)
+
+nsc2<- nsc2 %>%
+  mutate(glu_fru_well=(od_sugar_ghk - p2int)/p2slope) %>%
+  mutate(glu_fru_ex = glu_fru_well * df1) %>%
+  mutate(mg_glu_fru = (glu_fru_ex * 1.6)/mass_mg) %>%
+  mutate(sol_sug_well=(od_invertase - p2int)/p2slope) %>%
+  mutate(sol_sug_ex = sol_sug_well * df1) %>%
+  mutate(mg_sol_sug = ((sol_sug_ex *1.6)/mass_mg) + 0.9049) %>%
+  mutate(mg_sucrose = (mg_sol_sug - mg_glu_fru) + 1) %>%
+  mutate(nsc_well=(od_amg - p2int2)/p2slope2) %>%
+  mutate(nsc_ex = nsc_well * df2) %>%
+  mutate(mg_nsc = (nsc_ex * 1.6)/mass_mg) %>%
+  mutate(mg_starch = mg_nsc - mg_sol_sug)
+
+nsc3<- nsc3 %>%
+  mutate(glu_fru_well=(od_sugar_ghk - p3int)/p3slope) %>%
+  mutate(glu_fru_ex = glu_fru_well * df1) %>%
+  mutate(mg_glu_fru = (glu_fru_ex * 1.6)/mass_mg) %>%
+  mutate(sol_sug_well=(od_invertase - p3int)/p3slope) %>%
+  mutate(sol_sug_ex = sol_sug_well * df1) %>%
+  mutate(mg_sol_sug = (sol_sug_ex *1.6)/mass_mg) %>%
+  mutate(mg_sucrose = mg_sol_sug - mg_glu_fru + 1) %>%
+  mutate(nsc_well=(od_amg - p3int2)/p3slope2) %>%
+  mutate(nsc_ex = nsc_well * df2) %>%
+  mutate(mg_nsc = (nsc_ex * 1.6)/mass_mg) %>%
+  mutate(mg_starch = mg_nsc - mg_sol_sug)
+
+
+summary(nsc1$mg_glu_fru)
+summary(nsc2$mg_sucrose)
+summary(nsc3$mg_sucrose)
+
+ggplot(nsc2, aes(mg_sucrose)) + 
+  geom_histogram()
+
+## Combine datasets 
+nsc_full<-rbind(nsc1,nsc2, nsc3)
+head(full)
+unique(full$measurement)
+
+nsc_full <- nsc_full %>%
+  mutate(measurement = factor(measurement, levels = c("init", "0", "1", "7", "14"), labels = c("initial", "0","1","7","14")))
+
+nsc_full <- left_join(nsc_full, full, by = c("tree_id","needle_age","panel_id","tree_treatment","heat_treatment","measurement"))
+
+head(nsc_full)
+
+## Boxplots for preliminary data visualization
+
+ggplot(data = nsc_full, aes(x = measurement_date, y = mg_sol_sug, color = tree_treatment)) +
+  geom_point() +
+  facet_wrap(~needle_age)
+
+ggplot(data = nsc_full, aes(x = measurement_date, y = mg_glu_fru, color = tree_treatment)) +
+  geom_point() +
+  facet_wrap(~needle_age)
+
+ggplot(data = nsc_full, aes(x = measurement_date, y = mg_sucrose, color = tree_treatment)) +
+  geom_point() +
+  facet_wrap(~needle_age)
+
+
+head(nsc_full)
+
+## Summary stats for plotting
+library(tidyverse)
+
+# pivot to long format
+nsc_long <- nsc_full %>%
+  pivot_longer(
+    cols = c(mg_sol_sug, mg_sucrose, mg_glu_fru, mg_nsc),
+    names_to = "sugar_fraction",
+    values_to = "concentration"
+  ) %>%
+  mutate(sugar_fraction = factor(sugar_fraction,
+                                 levels = c("mg_glu_fru", "mg_sucrose", "mg_sol_sug", "mg_nsc"),
+                                 labels = c("Glucose + Fructose", "Sucrose", "Total soluble sugars", "Total NSC")
+  ))
+
+# summarise to means and 95% CI per group
+
+ggplot(nsc_full, aes(x=measurement_date, y=mg_sol_sug, group=needle_age, color=needle_age))+
+  stat_summary(fun = mean, geom = "point", position=position_dodge(width=0.5)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.3, position=position_dodge(width=0.5)) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "needle_age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "needle_age") +
+  
+  labs(x     = "Measurement Day",
+       y     = "Total soluable sugar (mg/mg)") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+ggplot(nsc_full, aes(x=measurement_date, y=mg_glu_fru, group=needle_age, color=needle_age))+
+  stat_summary(fun = mean, geom = "point", position=position_dodge(width=0.5)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.3, position=position_dodge(width=0.5)) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "Needle age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "Needle age") +
+  
+  labs(x     = "Measurement Day",
+       y     = "Glucose + Fructose (mg/mg)") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+ggplot(nsc_full, aes(x=measurement_date, y=mg_sucrose, group=needle_age, color=needle_age))+
+  stat_summary(fun = mean, geom = "point", position=position_dodge(width=0.5)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.3, position=position_dodge(width=0.5)) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "Needle age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "Needle age") +
+  
+  labs(x     = "Measurement Day",
+       y     = "Sucrose (mg/mg)") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+ggplot(nsc_full, aes(x=measurement_date, y=mg_nsc, group=needle_age, color=needle_age))+
+  stat_summary(fun = mean, geom = "point", position=position_dodge(width=0.5)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.3, position=position_dodge(width=0.5)) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "Needle age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "Needle age") +
+  
+  labs(x     = "Measurement Day",
+       y     = "NSC (mg/mg)") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+
+## Summarize to means and 95% CI per group
+head(nsc_long)
+unique(nsc_long$sugar_fraction)
+
+nsc_summary <- nsc_long %>%
+  mutate(concentration = pmax(concentration, 0, na.rm = TRUE)) %>%
+  mutate(measurement = factor(measurement,
+                              levels = c("initial", "0", "1", "7", "14"),
+                              labels = c("Initial", "0", "1", "7", "14"))) %>%
+  group_by(needle_age, tree_treatment, sugar_fraction, measurement) %>%
+  filter(! sugar_fraction == "Total NSC") %>%
+  mutate(sugar_fraction = factor(sugar_fraction, levels = c("Total soluble sugars","Glucose + Fructose","Sucrose"))) %>%
+  summarise(
+    mean_conc = mean(concentration, na.rm = TRUE),
+    n         = sum(!is.na(concentration)),
+    se        = sd(concentration, na.rm = TRUE) / sqrt(n),
+    ci95      = qt(0.975, df = n - 1) * se,
+    .groups   = "drop"
+  )
+
+nsc_summary2 <- nsc_long %>%
+  mutate(concentration = pmax(concentration, 0, na.rm = TRUE)) %>%
+  mutate(measurement = factor(measurement,
+                              levels = c("initial", "0", "1", "7", "14"),
+                              labels = c("Initial", "0", "1", "7", "14"))) %>%
+  group_by(needle_age, tree_treatment, sugar_fraction, measurement, tree_id) %>%
+  filter(! sugar_fraction == "Total NSC") %>%
+  mutate(sugar_fraction = factor(sugar_fraction, levels = c("Total soluble sugars","Glucose + Fructose","Sucrose"))) %>%
+  summarise(
+    mean_conc = mean(concentration, na.rm = TRUE),
+    n         = sum(!is.na(concentration)),
+    se        = sd(concentration, na.rm = TRUE) / sqrt(n),
+    ci95      = qt(0.975, df = n - 1) * se,
+    .groups   = "drop"
+  )
+
+
+treatment_labels <- c("control" = "Non-Irrigated", "irrigated" = "Irrigated")  
+age_labels <- c("new" = "Developing Foliage", "old" = "Mature Foliage")
+
+fraction_colours <- c(
+  "Total soluble sugars" = "darkseagreen",
+  "Glucose + Fructose"   = "#4A90D9",
+  "Sucrose"              = "goldenrod"
+)
+
+head(nsc_summary)
+
+ggplot(nsc_summary, aes(x = measurement, y = mean_conc,
+                        fill = needle_age)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(
+    aes(ymin = mean_conc - ci95, ymax = mean_conc + ci95),
+    position = position_dodge(width = 0.8),
+    width = 0.2
+  ) +
+  facet_grid(tree_treatment ~ sugar_fraction,
+             labeller = labeller(tree_treatment = treatment_labels,
+                                 sugar_fraction = c(
+                                   "Total soluble sugars" = "Total Soluble Sugar",
+                                   "Glucose + Fructose"   = "Glucose + Fructose",
+                                   "Sucrose"              = "Sucrose"
+                                 ))) +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    labels = c("new" = "Developing Foliage", "old" = "Mature Foliage")) +
+  geom_hline(yintercept=0, color="gray30") +
+  labs(
+    x = "Days post-heat",
+    y = "Soluble sugars (mg/mg dry tissue)",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+
+
+
+ggplot(nsc_summary2, aes(x = measurement, y = mean_conc,
+                        fill = needle_age)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(
+    aes(ymin = mean_conc - ci95, ymax = mean_conc + ci95),
+    position = position_dodge(width = 0.8),
+    width = 0.2
+  ) +
+  facet_grid(tree_id ~ sugar_fraction,
+             labeller = labeller(sugar_fraction = c(
+                                   "Total soluble sugars" = "Total Soluble Sugar",
+                                   "Glucose + Fructose"   = "Glucose + Fructose",
+                                   "Sucrose"              = "Sucrose"
+                                 ))) +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    labels = c("new" = "Developing Foliage", "old" = "Mature Foliage")) +
+  geom_hline(yintercept=0, color="gray30") +
+  labs(
+    x = "Days post-heat",
+    y = "Soluble sugars (mg/mg dry tissue)",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+unique(nsc_long$start_date)
+
+nsc_total_sugansc_total_sugansc_total_sugars <- nsc_summary2 %>%
+  filter(sugar_fraction == "Total soluble sugars")
+head(nsc_total_sugars)
+
+
+temp_scale <- 8.5 / max(temp$max_temp, na.rm = TRUE)
+
+ggplot(nsc_total_sugars, aes(x = measurement_date, y = mean_conc,
+                        fill = needle_age)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(
+    aes(ymin = mean_conc - ci95, ymax = mean_conc + ci95),
+    position = position_dodge(width = 0.8),
+    width = 0.2
+  ) +
+  geom_line(data = temp, aes(x = measurement_date, y = max_temp * temp_scale, fill = NULL),
+            color = "red", linewidth = 0.8, inherit.aes = FALSE) +
+  facet_wrap(~tree_treatment) +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    labels = c("new" = "Developing Foliage", "old" = "Mature Foliage")) +
+  scale_y_continuous(
+    limits = c(-0.6, 8.5),
+    sec.axis = sec_axis(~ . / temp_scale, name = "Maximum Temperature (°C)")
+  ) +
+  scale_x_date(
+    limits = as.Date(c("2025-07-29", "2025-08-28")),
+    date_labels = "%b %d",
+    date_breaks = "5 days"
+  ) + 
+  geom_hline(yintercept = 0, color = "gray20") +
+  labs(
+    x = "Measurement day",
+    y = "Soluble sugars (mg/mg dry tissue)",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    axis.title.y.right = element_text(color = "red"),
+    axis.text.y.right  = element_text(color = "red")
+  )
+
+nsc_suc <- nsc_summary2 %>%
+  filter(sugar_fraction == "Sucrose")
+
+ggplot(nsc_suc, aes(x = measurement_date, y = mean_conc,
+                             fill = needle_age)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(
+    aes(ymin = mean_conc - ci95, ymax = mean_conc + ci95),
+    position = position_dodge(width = 0.8),
+    width = 0.2
+  ) +
+  facet_wrap(~tree_treatment) +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    labels = c("new" = "Developing Foliage", "old" = "Mature Foliage")) +
+  scale_y_continuous(limits = c(-0.6, 8.5)) +
+  geom_hline(yintercept = 0, color = "gray20") +
+  labs(
+    x = "Measurement day",
+    y = "Soluble sugars (mg/mg dry tissue)",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "right"
+  )
+
+
+model1 <- lme(
+  mg_sol_sug ~ measurement_date * needle_age * tree_treatment * heat_treatment,
+  random = ~ 1 | tree_id,
+  data=nsc_full,
+  na.action = na.exclude
+)
+
+anova(model1)
+
+model2 <- lme(
+  mg_glu_fru ~ measurement_date * needle_age * tree_treatment + heat_treatment + measurement_date:heat_treatment 
+  + needle_age:heat_treatment + tree_treatment:heat_treatment,
+  random = ~ 1 | tree_id,
+  data=nsc_full,
+  na.action = na.exclude
+)
+
+anova(model2)
+
+
+model3 <- lme(
+  mg_sucrose ~ measurement_date * needle_age * tree_treatment + heat_treatment + measurement_date:heat_treatment 
+  + needle_age:heat_treatment + tree_treatment:heat_treatment,
+  random = ~ 1 | tree_id,
+  data=nsc_full,
+  na.action = na.exclude
+)
+
+anova(model3)
+
+
+emm_sol_sug<-emmeans(model1, specs= ~ needle_age * tree_treatment)
+summary(emm_sol_sug)
+
+emm_sol_sug_df<-as.data.frame(emm_sol_sug) 
+head(emm_sol_sug_df)
+
+new_cont<-c(1,0,0,0)
+old_cont<-c(0,1,0,0)
+new_irr<-c(0,0,1,0)
+old_irr<-c(0,0,0,1)
+
+diffq1<- emm_sol_sug %>%
+  contrast(.,
+           method=list(
+             "Control old - new needles" = old_cont - new_cont,
+             "Irrigated old - new needles" = old_irr - new_irr,
+             "Irrigated old - control old" = old_irr - old_cont,
+             "Irrigated new - control new" = new_irr - new_cont),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq1
+
+emm_sol_sug2<-emmeans(model1, specs= ~ needle_age)
+summary(emm_sol_sug2)
+
+emm_sol_sug2_df<-as.data.frame(emm_sol_sug2) 
+head(emm_sol_sug2_df)
+
+newss<-c(1,0)
+oldss<-c(0,1)
+
+diffq12<- emm_sol_sug2 %>%
+  contrast(.,
+           method=list(
+             "old - new needles" = oldss- newss),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq12
+
+emm_sol_sug3<-emmeans(model1, specs= ~ tree_treatment)
+summary(emm_sol_sug3)
+
+emm_sol_sug3_df<-as.data.frame(emm_sol_sug3) 
+head(emm_sol_sug3_df)
+
+contss<-c(1,0)
+irrss<-c(0,1)
+
+diffq13<- emm_sol_sug3 %>%
+  contrast(.,
+           method=list(
+             "cont - irr needles" = contss- irrss),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq13
+
+
+
+emm_glu_fru<-emmeans(model2, specs= ~ needle_age * tree_treatment)
+summary(emm_glu_fru)
+
+emm_glu_fru_df<-as.data.frame(emm_glu_fru) 
+head(emm_glu_fru_df)
+
+new_contg<-c(1,0,0,0)
+old_contg<-c(0,1,0,0)
+new_irrg<-c(0,0,1,0)
+old_irrg<-c(0,0,0,1)
+
+diffq2<- emm_glu_fru %>%
+  contrast(.,
+           method=list(
+             "Control old - new needles" = old_contg - new_contg,
+             "Irrigated old - new needles" = old_irrg - new_irrg,
+             "Irrigated old - control old" = old_irrg - old_contg,
+             "Irrigated new - control new" = new_irrg - new_contg),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq2
+
+emm_glu_fru2<-emmeans(model2, specs= ~ needle_age)
+summary(emm_glu_fru2)
+
+emm_glu_fru2_df<-as.data.frame(emm_glu_fru2) 
+head(emm_glu_fru2_df)
+
+newgf<-c(1,0)
+oldgf<-c(0,1)
+
+diffq22<- emm_glu_fru2 %>%
+  contrast(.,
+           method=list(
+             "old - new needles" = oldgf- newgf),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq22
+
+## Across all measurements, glucose and fructose differ by 0.66 to 1.96 mg/mg dry tissue between developing and mature foliage (95% CI, t(138)=3.98, p=0.001). 
+
+emm_glu_fru3<-emmeans(model2, specs= ~ tree_treatment)
+summary(emm_glu_fru3)
+
+emm_glu_fru3_df<-as.data.frame(emm_glu_fru3) 
+head(emm_glu_fru3_df)
+
+contgf<-c(1,0)
+irrgf<-c(0,1)
+
+diffq23<- emm_glu_fru3 %>%
+  contrast(.,
+           method=list(
+             "cont - irr needles" = contgf- irrgf),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq23
+
+
+
+emm_suc<-emmeans(model3, specs= ~ needle_age * tree_treatment)
+summary(emm_suc)
+
+emm_suc_df<-as.data.frame(emm_suc) 
+head(emm_suc_df)
+
+new_conts<-c(1,0,0,0)
+old_conts<-c(0,1,0,0)
+new_irrs<-c(0,0,1,0)
+old_irrs<-c(0,0,0,1)
+
+diffq3<- emm_suc %>%
+  contrast(.,
+           method=list(
+             "Control old - new needles" = old_conts - new_conts,
+             "Irrigated old - new needles" = old_irrs - new_irrs,
+             "Irrigated old - control old" = old_irrs - old_conts,
+             "Irrigated new - control new" = new_irrs - new_conts),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq3
+
+
+emm_suc2<-emmeans(model3, specs= ~ needle_age)
+summary(emm_suc2)
+
+emm_suc2_df<-as.data.frame(emm_suc2) 
+head(emm_suc2_df)
+
+news<-c(1,0)
+olds<-c(0,1)
+
+diffq32<- emm_suc2 %>%
+  contrast(.,
+           method=list(
+             "old - new needles" = olds- news),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq32
+
+## Across all measurements, sucrose differs by 0.30 to 1.49 mg/mg dry tissue between developing and mature foliage (95% CI, t(138)=4.89, p=0.001). 
+
+
+emm_suc3<-emmeans(model3, specs= ~ tree_treatment)
+summary(emm_suc3)
+
+emm_suc3_df<-as.data.frame(emm_suc3) 
+head(emm_suc3_df)
+
+conts<-c(1,0)
+irrs<-c(0,1)
+
+diffq33<- emm_suc3 %>%
+  contrast(.,
+           method=list(
+             "cont - irr needles" = conts- irrs),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq33
+
+
+## 2026
+library(tidyverse)
+library(lmerTest)
+library(emmeans)
+library(nlme)
+
+
+## Read in the data
+library(readr)
+raw <- readLines("~/Masters/NSC/NSC_2026.csv")
+raw_clean <- gsub('^"|"$', "", raw)
+nsc <- read_csv(paste(raw_clean, collapse = "\n"))
+raw2 <- readLines("~/Masters/NSC/glucose_2026.csv")
+raw2_clean <- gsub('^"|"$', "", raw2)
+glu <- read_csv(paste(raw2_clean, collapse = "\n"))
+full <- read.csv("~/Masters/Andrews/bigdat2026.csv")
+temp <- read.csv("~/Masters/Andrews/envsum_2026.csv")
+
+raw_lines <- readLines("~/Masters/NSC/NSC_2026.csv", n = 2)
+raw_lines
+
+temp <- temp %>%
+  rename(., measurement_date = Date) %>%
+  rename(., max_temp = Max.of.AIRTEMP_MEAN_150_0_04) %>%
+  rename(., max_VPD = Max.of.VPD_MEAN_150_0_04) %>%
+  mutate(
+    measurement_date = as.Date(measurement_date, format = "%m/%d/%Y")
+  )
+
+full<- full %>%  
+  mutate(
+    measurement_date = as.Date(measurement_date, format = "%m/%d/%Y"))
+
+
+full <- left_join(full, temp, by = "measurement_date")
+
+nsc<- nsc %>%
+  mutate(sugar_ghk_corr=sugar_ghk_75 - sugar_ghk_blank) %>%
+  mutate(sugar_h2o_corr=sugar_h2o_75 - sugar_h2o_blank) %>%
+  mutate(invertase_ghk_corr = invertase_ghk_75 - invertase_ghk_blank) %>%
+  mutate(invertase_h2o_corr = invertase_h2o_75 - invertase_h2o_blank) %>%
+  mutate(od_sugar_ghk = sugar_ghk_corr - sugar_h2o_corr) %>%
+  mutate(od_invertase = invertase_ghk_corr - invertase_h2o_corr)
+
+glu <- glu %>%
+  mutate(sugar_ghk_corr=sugar_ghk_75 - sugar_ghk_blank) %>%
+  mutate(sugar_h2o_corr=sugar_h2o_75 - sugar_h2o_blank) %>%
+  mutate(invertase_ghk_corr = invertase_ghk_75 - invertase_ghk_blank) %>%
+  mutate(invertase_h2o_corr = invertase_h2o_75 - invertase_h2o_blank) %>%
+  mutate(od_sugar_ghk = sugar_ghk_corr - sugar_h2o_corr) %>%
+  mutate(od_invertase = invertase_ghk_corr - invertase_h2o_corr)
+
+
+## Separate plates for calculations
+nsc1<-filter(nsc, plate=="1")
+nsc2<-filter(nsc, plate=="2")
+nsc3<-filter(nsc, plate=="3") 
+glu1<-filter(glu, Plate=="1")
+glu2<-filter(glu, Plate=="2")
+glu3<-filter(glu, Plate=="3")
+
+
+## Check for linearity in serial dilutions
+plot(glu1$glucose_conc, glu1$od_sugar_ghk)
+plot(glu2$glucose_conc, glu2$od_sugar_ghk)
+plot(glu3$glucose_conc, glu3$od_sugar_ghk)
+
+
+## Save slope and intercept parameters for each plate
+p1eq<-lm(od_sugar_ghk ~ glucose_conc, data=glu1)
+p1eq
+p1int<--0.01769
+p1slope<-1.79827
+
+p1eq2<-lm(od_invertase ~ glucose_conc, data=glu1)
+p1eq2
+p1int2<-(-0.001762)
+p1slope2<-(1.154991)
+
+p2eq<-lm(od_sugar_ghk ~ glucose_conc, data=glu2)
+p2eq
+p2int<-0.007575
+p2slope<-1.661030
+
+p2eq2<-lm(od_invertase ~ glucose_conc, data=glu2)
+p2eq2
+p2int2<-0.006709
+p2slope2<-1.092275
+
+p3eq<-lm(od_sugar_ghk ~ glucose_conc, data=glu3)
+p3eq
+p3int<-(0.002652)
+p3slope<-1.673659
+
+p3eq2<-lm(od_invertase ~ glucose_conc, data=glu3)
+p3eq2
+p3int2<-(-0.002333)
+p3slope2<-1.190219
+
+## Calculate dilution factor: df=(total well volume/well sample aliquot) * (H2O volume added to dry tissue / supernatant on sugar plate)
+df1<-((220/20)*(1600/120))
+df2<-((200/20)*(1600/120)) # Used 180uL ghk for plates 2 and 3
+dfinv1<-((220/20)*(1600/120)*(50/75)) 
+dfinv2 <-((200/20)*(1600/120)*(50/75))
+
+## Sugar calculations
+nsc1<- nsc1 %>%
+  mutate(glu_fru_well=(od_sugar_ghk - p1int)/p1slope) %>%
+  mutate(glu_fru_ex = glu_fru_well * df1) %>%
+  mutate(mg_glu_fru = (glu_fru_ex * 1.6)/mass_mg) %>%
+  mutate(sol_sug_well=(od_invertase - p1int2)/p1slope2) %>%
+  mutate(sol_sug_ex = sol_sug_well * dfinv1) %>%
+  mutate(mg_sol_sug = ((sol_sug_ex *1.6)/mass_mg)) %>%
+  mutate(mg_sucrose = mg_sol_sug - mg_glu_fru) 
+
+nsc2<- nsc2 %>%
+  mutate(glu_fru_well=(od_sugar_ghk - p2int)/p2slope) %>%
+  mutate(glu_fru_ex = glu_fru_well * df2) %>%
+  mutate(mg_glu_fru = (glu_fru_ex * 1.6)/mass_mg) %>%
+  mutate(sol_sug_well=(od_invertase - p2int2)/p2slope2) %>%
+  mutate(sol_sug_ex = sol_sug_well * dfinv2) %>%
+  mutate(mg_sol_sug = ((sol_sug_ex *1.6)/mass_mg)) %>%
+  mutate(mg_sucrose = (mg_sol_sug - mg_glu_fru)) 
+
+nsc3<- nsc3 %>%
+  mutate(glu_fru_well=(od_sugar_ghk - p3int)/p3slope) %>%
+  mutate(glu_fru_ex = glu_fru_well * df2) %>%
+  mutate(mg_glu_fru = (glu_fru_ex * 1.6)/mass_mg) %>%
+  mutate(sol_sug_well=(od_invertase - p3int2)/p3slope2) %>%
+  mutate(sol_sug_ex = sol_sug_well * dfinv2) %>%
+  mutate(mg_sol_sug = (sol_sug_ex *1.6)/mass_mg) %>%
+  mutate(mg_sucrose = mg_sol_sug - mg_glu_fru) 
+
+
+summary(nsc1$mg_glu_fru)
+summary(nsc2$mg_sucrose)
+summary(nsc3$mg_sucrose)
+
+ggplot(nsc2, aes(mg_sucrose)) + 
+  geom_histogram()
+
+## Combine datasets 
+nsc_full<-rbind(nsc1,nsc2, nsc3) 
+head(nsc_full)
+unique(full$measurement)
+unique(nsc_full$measurement)
+class(nsc_full$measurement)
+
+nsc_full <- nsc_full %>%
+  mutate(measurement = factor(measurement, levels = c("init", "h1", "h2", "h3", "r0","r1","r4","r6","r9","r13"), 
+                              labels = c("initial","H1","H2","H3","R0","R1","R4","R6","R9","R13")))
+
+class(nsc_full$measurement)
+levels(nsc_full$measurement)
+
+class(full$measurement)
+full <- full %>%
+  mutate(measurement = factor(measurement, levels = c("initial","H1","H2","H3","R0","R1","R4","R6","R9","R13")))
+head(full)
+head(nsc_full)
+
+nsc_full <- nsc_full %>%
+  left_join(full, by = c("measurement", "tree_id", "needle_age","tree_treatment", "panel_id", "heat_treatment"))
+## Boxplots for preliminary data visualization
+names(nsc_full)
+ggplot(data = nsc_full, aes(x = measurement, y = mg_sol_sug, color = tree_treatment)) +
+  geom_point() +
+  facet_wrap(~needle_age)
+
+ggplot(data = nsc_full, aes(x = measurement, y = mg_glu_fru, color = tree_treatment)) +
+  geom_point() +
+  facet_wrap(~needle_age)
+
+ggplot(data = nsc_full, aes(x = measurement_date, y = mg_sucrose, color = tree_treatment)) +
+  geom_point() +
+  facet_wrap(~needle_age)
+
+
+head(nsc_full)
+
+## Summary stats for plotting
+library(tidyverse)
+
+# pivot to long format
+nsc_long <- nsc_full %>%
+  pivot_longer(
+    cols = c(mg_sol_sug, mg_sucrose, mg_glu_fru),
+    names_to = "sugar_fraction",
+    values_to = "concentration"
+  ) %>%
+  mutate(sugar_fraction = factor(sugar_fraction,
+                                 levels = c("mg_glu_fru", "mg_sucrose", "mg_sol_sug"),
+                                 labels = c("Glucose + Fructose", "Sucrose", "Total soluble sugars")
+  ))
+
+# summarise to means and 95% CI per group
+
+ggplot(nsc_full, aes(x=measurement, y=mg_sol_sug, group=needle_age, color=needle_age))+
+  stat_summary(fun = mean, geom = "point", position=position_dodge(width=0.5)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.3, position=position_dodge(width=0.5)) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "needle_age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "needle_age") +
+  
+  labs(x     = "Measurement Day",
+       y     = "Total soluable sugar (mg/mg)") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+ggplot(nsc_full, aes(x=measurement, y=mg_glu_fru, group=needle_age, color=needle_age))+
+  stat_summary(fun = mean, geom = "point", position=position_dodge(width=0.5)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.3, position=position_dodge(width=0.5)) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "Needle age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "Needle age") +
+  
+  labs(x     = "Measurement Day",
+       y     = "Glucose + Fructose (mg/mg)") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+ggplot(nsc_full, aes(x=measurement, y=mg_sucrose, group=needle_age, color=needle_age))+
+  stat_summary(fun = mean, geom = "point", position=position_dodge(width=0.5)) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.3, position=position_dodge(width=0.5)) +
+  facet_wrap(~ tree_treatment,
+             labeller = labeller(tree_treatment = c(
+               control   = "Control",
+               irrigated = "Irrigated"
+             ))) +
+  scale_color_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                     name   = "Needle age") +
+  scale_fill_manual(values  = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    name    = "Needle age") +
+  
+  labs(x     = "Measurement Day",
+       y     = "Sucrose (mg/mg)") +
+  theme_bw(base_size = 13) +
+  theme(legend.position  = "bottom",
+        strip.background = element_rect(fill = "grey90"),
+        strip.text       = element_text(face = "bold"))
+
+
+## Summarize to means and 95% CI per group
+head(nsc_long)
+unique(nsc_long$sugar_fraction)
+
+nsc_summary <- nsc_long %>%
+  mutate(concentration = pmax(concentration, 0, na.rm = TRUE)) %>%
+  group_by(needle_age, tree_treatment, sugar_fraction, measurement) %>%
+  mutate(sugar_fraction = factor(sugar_fraction, levels = c("Total soluble sugars","Glucose + Fructose","Sucrose"))) %>%
+  summarise(
+    mean_conc = mean(concentration, na.rm = TRUE),
+    n         = sum(!is.na(concentration)),
+    se        = sd(concentration, na.rm = TRUE) / sqrt(n),
+    ci95      = qt(0.975, df = n - 1) * se,
+    .groups   = "drop"
+  )
+
+nsc_summary2 <- nsc_long %>%
+  mutate(concentration = pmax(concentration, 0, na.rm = TRUE)) %>%
+  group_by(needle_age, tree_treatment, sugar_fraction, measurement, heat_treatment) %>%
+  mutate(sugar_fraction = factor(sugar_fraction, levels = c("Total soluble sugars","Glucose + Fructose","Sucrose"))) %>%
+  summarise(
+    mean_conc = mean(concentration, na.rm = TRUE),
+    n         = sum(!is.na(concentration)),
+    se        = sd(concentration, na.rm = TRUE) / sqrt(n),
+    ci95      = qt(0.975, df = n - 1) * se,
+    .groups   = "drop"
+  )
+
+
+treatment_labels <- c("control" = "Non-Irrigated", "irrigated" = "Irrigated")  
+age_labels <- c("new" = "Developing Foliage", "old" = "Mature Foliage")
+
+fraction_colours <- c(
+  "Total soluble sugars" = "darkseagreen",
+  "Glucose + Fructose"   = "#4A90D9",
+  "Sucrose"              = "goldenrod"
+)
+
+head(nsc_summary)
+
+ggplot(nsc_summary, aes(x = measurement, y = mean_conc,
+                        fill = tree_treatment)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(
+    aes(ymin = mean_conc - ci95, ymax = mean_conc + ci95),
+    position = position_dodge(width = 0.8),
+    width = 0.2
+  ) +
+  facet_grid(needle_age ~ sugar_fraction,
+             labeller = labeller(needle_age = age_labels,
+                                 sugar_fraction = c(
+                                   "Total soluble sugars" = "Total Soluble Sugar",
+                                   "Glucose + Fructose"   = "Glucose + Fructose",
+                                   "Sucrose"              = "Sucrose"
+                                 ))) +
+  scale_fill_manual(values = c("control" = "goldenrod", "irrigated" = "darkseagreen"),
+                    labels = c("control" = "Non-Irrigated", "irrigated" = "Irrigated")) +
+  geom_hline(yintercept=0, color="gray30") +
+  labs(
+    x = "2026 Heat Treatment",
+    y = "Soluble sugars (mg/mg dry tissue)",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+
+
+
+ggplot(nsc_summary2, aes(x = measurement, y = mean_conc,
+                         fill = tree_treatment)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(
+    aes(ymin = mean_conc - ci95, ymax = mean_conc + ci95),
+    position = position_dodge(width = 0.8),
+    width = 0.2
+  ) +
+  facet_grid(needle_age+heat_treatment ~ sugar_fraction,
+             labeller = labeller(sugar_fraction = c(
+               "Total soluble sugars" = "Total Soluble Sugar",
+               "Glucose + Fructose"   = "Glucose + Fructose",
+               "Sucrose"              = "Sucrose"
+             ))) +
+  scale_fill_manual(values = c("control" = "goldenrod", "irrigated" = "darkseagreen"),
+                    labels = c("control" = "Non-Irrigated", "irrigated" = "Irrigated")) +
+  geom_hline(yintercept=0, color="gray30") +
+  labs(
+    x = "Days post-heat",
+    y = "Soluble sugars (mg/mg dry tissue)",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+unique(nsc_long$start_date)
+
+nsc_total_sugansc_total_sugansc_total_sugars <- nsc_summary2 %>%
+  filter(sugar_fraction == "Total soluble sugars")
+head(nsc_total_sugars)
+
+
+temp_scale <- 8.5 / max(temp$max_temp, na.rm = TRUE)
+
+ggplot(nsc_total_sugars, aes(x = measurement_date, y = mean_conc,
+                             fill = needle_age)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(
+    aes(ymin = mean_conc - ci95, ymax = mean_conc + ci95),
+    position = position_dodge(width = 0.8),
+    width = 0.2
+  ) +
+  geom_line(data = temp, aes(x = measurement_date, y = max_temp * temp_scale, fill = NULL),
+            color = "red", linewidth = 0.8, inherit.aes = FALSE) +
+  facet_wrap(~tree_treatment) +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    labels = c("new" = "Developing Foliage", "old" = "Mature Foliage")) +
+  scale_y_continuous(
+    limits = c(-0.6, 8.5),
+    sec.axis = sec_axis(~ . / temp_scale, name = "Maximum Temperature (°C)")
+  ) +
+  scale_x_date(
+    limits = as.Date(c("2025-07-29", "2025-08-28")),
+    date_labels = "%b %d",
+    date_breaks = "5 days"
+  ) + 
+  geom_hline(yintercept = 0, color = "gray20") +
+  labs(
+    x = "Measurement day",
+    y = "Soluble sugars (mg/mg dry tissue)",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    axis.title.y.right = element_text(color = "red"),
+    axis.text.y.right  = element_text(color = "red")
+  )
+
+nsc_suc <- nsc_summary2 %>%
+  filter(sugar_fraction == "Sucrose")
+
+ggplot(nsc_suc, aes(x = measurement_date, y = mean_conc,
+                    fill = needle_age)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_errorbar(
+    aes(ymin = mean_conc - ci95, ymax = mean_conc + ci95),
+    position = position_dodge(width = 0.8),
+    width = 0.2
+  ) +
+  facet_wrap(~tree_treatment) +
+  scale_fill_manual(values = c("new" = "goldenrod", "old" = "darkseagreen"),
+                    labels = c("new" = "Developing Foliage", "old" = "Mature Foliage")) +
+  scale_y_continuous(limits = c(-0.6, 8.5)) +
+  geom_hline(yintercept = 0, color = "gray20") +
+  labs(
+    x = "Measurement day",
+    y = "Soluble sugars (mg/mg dry tissue)",
+    fill = NULL
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "right"
+  )
+
+
+model1 <- lme(
+  mg_sol_sug ~ measurement * needle_age * tree_treatment * heat_treatment,
+  random = ~ 1 | plate,
+  data=nsc_full,
+  na.action = na.exclude
+)
+
+anova(model1)
+
+model2 <- lme(
+  mg_glu_fru ~ measurement * needle_age * tree_treatment * heat_treatment, 
+  random = ~ 1 | plate,
+  data=nsc_full,
+  na.action = na.exclude
+)
+
+anova(model2)
+
+
+model3 <- lme(
+  mg_sucrose ~ measurement * needle_age * tree_treatment * heat_treatment,
+  random = ~ 1 | plate,
+  data=nsc_full,
+  na.action = na.exclude
+)
+
+anova(model3)
+
+
+emm_sol_sug<-emmeans(model1, specs= ~ needle_age * tree_treatment)
+summary(emm_sol_sug)
+
+emm_sol_sug_df<-as.data.frame(emm_sol_sug) 
+head(emm_sol_sug_df)
+
+new_cont<-c(1,0,0,0)
+old_cont<-c(0,1,0,0)
+new_irr<-c(0,0,1,0)
+old_irr<-c(0,0,0,1)
+
+diffq1<- emm_sol_sug %>%
+  contrast(.,
+           method=list(
+             "Control old - new needles" = old_cont - new_cont,
+             "Irrigated old - new needles" = old_irr - new_irr,
+             "Irrigated old - control old" = old_irr - old_cont,
+             "Irrigated new - control new" = new_irr - new_cont),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq1
+
+emm_sol_sug2<-emmeans(model1, specs= ~ needle_age)
+summary(emm_sol_sug2)
+
+emm_sol_sug2_df<-as.data.frame(emm_sol_sug2) 
+head(emm_sol_sug2_df)
+
+newss<-c(1,0)
+oldss<-c(0,1)
+
+diffq12<- emm_sol_sug2 %>%
+  contrast(.,
+           method=list(
+             "old - new needles" = oldss- newss),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq12
+
+emm_sol_sug3<-emmeans(model1, specs= ~ tree_treatment)
+summary(emm_sol_sug3)
+
+emm_sol_sug3_df<-as.data.frame(emm_sol_sug3) 
+head(emm_sol_sug3_df)
+
+contss<-c(1,0)
+irrss<-c(0,1)
+
+diffq13<- emm_sol_sug3 %>%
+  contrast(.,
+           method=list(
+             "cont - irr needles" = contss- irrss),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq13
+
+
+
+emm_glu_fru<-emmeans(model2, specs= ~ needle_age * tree_treatment)
+summary(emm_glu_fru)
+
+emm_glu_fru_df<-as.data.frame(emm_glu_fru) 
+head(emm_glu_fru_df)
+
+new_contg<-c(1,0,0,0)
+old_contg<-c(0,1,0,0)
+new_irrg<-c(0,0,1,0)
+old_irrg<-c(0,0,0,1)
+
+diffq2<- emm_glu_fru %>%
+  contrast(.,
+           method=list(
+             "Control old - new needles" = old_contg - new_contg,
+             "Irrigated old - new needles" = old_irrg - new_irrg,
+             "Irrigated old - control old" = old_irrg - old_contg,
+             "Irrigated new - control new" = new_irrg - new_contg),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq2
+
+emm_glu_fru2<-emmeans(model2, specs= ~ needle_age)
+summary(emm_glu_fru2)
+
+emm_glu_fru2_df<-as.data.frame(emm_glu_fru2) 
+head(emm_glu_fru2_df)
+
+newgf<-c(1,0)
+oldgf<-c(0,1)
+
+diffq22<- emm_glu_fru2 %>%
+  contrast(.,
+           method=list(
+             "old - new needles" = oldgf- newgf),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq22
+
+## Across all measurements, glucose and fructose differ by 0.66 to 1.96 mg/mg dry tissue between developing and mature foliage (95% CI, t(138)=3.98, p=0.001). 
+
+emm_glu_fru3<-emmeans(model2, specs= ~ tree_treatment)
+summary(emm_glu_fru3)
+
+emm_glu_fru3_df<-as.data.frame(emm_glu_fru3) 
+head(emm_glu_fru3_df)
+
+contgf<-c(1,0)
+irrgf<-c(0,1)
+
+diffq23<- emm_glu_fru3 %>%
+  contrast(.,
+           method=list(
+             "cont - irr needles" = contgf- irrgf),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq23
+
+
+
+emm_suc<-emmeans(model3, specs= ~ needle_age * tree_treatment)
+summary(emm_suc)
+
+emm_suc_df<-as.data.frame(emm_suc) 
+head(emm_suc_df)
+
+new_conts<-c(1,0,0,0)
+old_conts<-c(0,1,0,0)
+new_irrs<-c(0,0,1,0)
+old_irrs<-c(0,0,0,1)
+
+diffq3<- emm_suc %>%
+  contrast(.,
+           method=list(
+             "Control old - new needles" = old_conts - new_conts,
+             "Irrigated old - new needles" = old_irrs - new_irrs,
+             "Irrigated old - control old" = old_irrs - old_conts,
+             "Irrigated new - control new" = new_irrs - new_conts),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq3
+
+
+emm_suc2<-emmeans(model3, specs= ~ needle_age)
+summary(emm_suc2)
+
+emm_suc2_df<-as.data.frame(emm_suc2) 
+head(emm_suc2_df)
+
+news<-c(1,0)
+olds<-c(0,1)
+
+diffq32<- emm_suc2 %>%
+  contrast(.,
+           method=list(
+             "old - new needles" = olds- news),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq32
+
+## Across all measurements, sucrose differs by 0.30 to 1.49 mg/mg dry tissue between developing and mature foliage (95% CI, t(138)=4.89, p=0.001). 
+
+
+emm_suc3<-emmeans(model3, specs= ~ tree_treatment)
+summary(emm_suc3)
+
+emm_suc3_df<-as.data.frame(emm_suc3) 
+head(emm_suc3_df)
+
+conts<-c(1,0)
+irrs<-c(0,1)
+
+diffq33<- emm_suc3 %>%
+  contrast(.,
+           method=list(
+             "cont - irr needles" = conts- irrs),
+           adjust = "sidak"
+  ) %>%
+  summary(., infer=T) %>%
+  as.data.frame(.)
+diffq33
+
+
