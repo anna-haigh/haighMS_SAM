@@ -1,0 +1,540 @@
+---
+title: "SAM analysis of $F_v/F_m$"
+author: 
+  - "Dusty Gannon"
+  - "Anna Haigh"
+format: html
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library(tidyverse)
+library(here)
+library(tidybayes)
+library(bayesplot)
+
+dat <- read_csv(here("Data/SAM_data.csv"))
+
+```
+
+## Data viz to get a sense of what's happening
+
+```{r}
+#| warning: false
+#| message: false
+
+ggplot(dat, aes(x = max_airtemp, y = log(Fm - Fo) - log(Fm))) +
+  geom_point(aes(color = tree_treatment, shape = heat_treatment)) +
+  geom_smooth(aes(color = tree_treatment)) +
+  ylim(c(-2, 0))
+```
+
+
+We need to structure the data in a particular way to feed into the model code. The important parts are:
+
+1. `Fv` and the offset (`log(Fm)`) are `(Ndays - Nlags) * Nbranches`-long vectors. They should start on the first day of measurement while the antecedent variables should start `Nlags` before that.
+
+2. For the explanatory variables that are not missing any days, we construct the rolling matrix with lagged vectors in the columns. So, if there are 5 lags, the matrix should have `Ndays - 5` rows and 5 columns.
+
+3. `Psi` should be a vector of length `Ndays`. The lags get calculated internally, since we need a model for how `Psi` evolves through time.
+
+## Dimensions and day-indexing convention
+
+The data are organized as one row per tree-day (this might need to be per branch-day for the real data), with weather (`Tmax`, `Tmin`, `VPD`) recorded
+every day but `FvFm` and `WP` recorded only on measurement days. Stan's `Ndays`
+is *not* the number of calendar days in the experiment -- it's the number of days
+minus the number of lags (i.e. calendar days `(Nlag + 1):Ndays_total`). Model day `d = 1:Ndays` therefore maps onto calendar day `d + Nlag`.
+
+`Nlag` itself is a modeling choice (how many days of lagged weather to let the
+Dirichlet weights spread over), not something read off the data -- it just has
+to be small enough that the first `FvFm`/`WaterPotential` measurement day can have a full lag-window in front of it.
+
+
+## Constructing the Lagged weather matrices (`Tmax`, `Tmin`, `VPD`)
+
+`Tmax`/`Tmin`/`VPD` are day-level (shared across trees), so we first collapse
+to one row per calendar day, then build a `[Ndays, Nlag]` rolling-window matrix
+for each. Row `d` holds the `Nlag` days ending on (and including) calendar day
+`d + Nlag`, ordered **most-recent-first** (column 1 = lag 1, the day prior to the first measurement; column `Nlag` = the oldest day in the window) -- this matches how
+`antPsi` is built from `psi` in the Stan model, and the Dirichlet weight
+vectors (`w_Tmax`, etc.) assume the same ordering.
+
+```{r weather_dat}
+
+Nlag <- 5  # antecedent window length (days)
+
+weather <- dat |> 
+  select(c(date, max_airtemp, min_airtemp, mean_vpd)) |>
+  distinct() |>
+  arrange(date)
+
+# now start the weather data Nlag days prior to first measurement
+first_day <- dat |>
+  select(c(date, FvFm)) |>
+  drop_na() |>
+  pull(date) |> min()
+
+weather <- weather |>
+  filter(date >= (first_day - 5))
+
+# standardize the weather covariates before building the lag matrices, so
+# the antecedent weights/coefficients are estimated on a common, unitless
+# scale; save the means/sds to back-transform the fitted coefficients later
+weather_means <- c(
+  Tmax = mean(weather$max_airtemp, na.rm = TRUE),
+  Tmin = mean(weather$min_airtemp, na.rm = TRUE),
+  VPD  = mean(weather$mean_vpd, na.rm = TRUE)
+)
+
+weather_sds <- c(
+  Tmax = sd(weather$max_airtemp, na.rm = TRUE),
+  Tmin = sd(weather$min_airtemp, na.rm = TRUE),
+  VPD  = sd(weather$mean_vpd, na.rm = TRUE)
+)
+
+weather <- weather |>
+  mutate(
+    max_airtemp_std = (max_airtemp - weather_means["Tmax"]) / weather_sds["Tmax"],
+    min_airtemp_std = (min_airtemp - weather_means["Tmin"]) / weather_sds["Tmin"],
+    mean_vpd_std    = (mean_vpd - weather_means["VPD"]) / weather_sds["VPD"]
+  )
+
+# total number of days will be different after rolling window is applied
+Ndays_total <- nrow(weather)
+
+# x: a daily vector of length Ndays_total -> [Ndays, Nlag] rolling-window matrix
+build_lag_matrix <- function(x, Nlag) {
+  N <- length(x)
+  sapply(1:Nlag, function(l){x[(Nlag + 1 - l):(N - l)]})
+}
+
+Tmax_mat <- build_lag_matrix(weather$max_airtemp_std, Nlag)
+Tmin_mat <- build_lag_matrix(weather$min_airtemp_std, Nlag)
+VPD_mat  <- build_lag_matrix(weather$mean_vpd_std, Nlag)
+
+# Ndays should be Ndays_total - Nlag
+Ndays <- Ndays_total - Nlag
+
+stopifnot(
+  all(dim(Tmax_mat) == c(Ndays, Nlag)),
+  all(dim(Tmin_mat) == c(Ndays, Nlag)),
+  all(dim(VPD_mat)  == c(Ndays, Nlag))
+)
+
+```
+
+## The response and it's presence absence indicator
+
+These need to be the length of the full FvFm dataset starting from the first day of measurement, then every day
+by tree in between. That is, every tree has its own time series over the full measurement window, even though there may be gaps in the time series for a given tree.
+
+Since `FvFm` is a ratio, I think we will want `log(Fv)` as the response variable and to add `log(Fm)` as an
+*offset* to the mean. This should allow more normal-looking residuals, and we can still get back to a scale that makes sense. 
+
+**One question we need to address is what to do with *negative* Fv values**. This shouldn't happen as I understand it, but instrument measurement error can result in this happening. For now, I just drop these cases.
+
+```{r}
+
+dat2 <- dat |>
+  select(c(
+    date, tree_id, tree_treatment, 
+    needle_age, panel_id, heat_treatment,
+    dayPPFD,
+    Fo, Fm, FvFm
+  )) |>
+  filter(date >= first_day)
+
+
+# create missingness index and other column transformations
+dat2 <- dat2 |> 
+  mutate(
+    date_index = as.integer(date - first_day + 1),
+    Fv = (Fm - Fo),
+    Fv_aug = if_else(is.na(Fv), 1.0, Fv),
+    l_Fv = log(Fv_aug),
+    Fm_aug = if_else(is.na(Fm), 1.0, Fm),
+    logFm = log(Fm_aug),
+    pa_Fo = !is.na(Fo)
+  ) |>
+  filter(!is.nan(l_Fv))
+
+```
+
+Note that the warnings come from negative $F_v$ values, so we drop those rows.
+
+## First without predawn water potential
+
+The water potential variable might actually be problematic given how infrequently it was measured. I'm going to first test the model code without it, then we might add it back in later.
+
+### Assembling the Stan data list
+
+We first want to create the design matrix (with treatments and such) and then compile all the components specified in the data block in the Stan code into a list.
+
+```stan
+
+data {
+  
+  int<lower=1> Ndays;                // number days for which the mean can be calculated (Ndays_total - Nlag)
+  int<lower=1> Ntrees;               // Number of trees in data
+  int<lower=1> Nlag;                 // number of lag days included in the antecedent window
+  int<lower=Ndays*Ntrees> N;         // total number of rows in the data, should be at least as many as days * trees
+  int<lower=1> K;                    // columns in design matrix. Should at least be one for the intercept
+  int<lower=1> Npanels;              // Number of unique panels/branches tracked
+
+  // Fv/Fm is modeled as log(Fv) with log(Fm) as an offset: since
+  // log(Fv) = log(Fm) + log(Fv/Fm), giving log(Fv) mean log(Fm) + mu is
+  // equivalent to modeling the log ratio directly with mean mu.
+  
+  vector[N] l_Fv;                               // variable fluorescence; placeholder (e.g. 1) where missing
+  vector[N] l_Fm;                               // log(maximal fluorescence), used as an offset; placeholder (e.g. 0) where missing
+  array[N] int<lower=0, upper=1> pa_FvFm;           // presence/absence of a paired Fv/Fm measurement
+  array[N] int<lower=1, upper=Ndays> date_index;    // date index lookup
+
+  // --- lagged environmental variables --- //
+  matrix[Ndays, Nlag] Tmax;
+  matrix[Ndays, Nlag] Tmin;
+  matrix[Ndays, Nlag] VPD;
+  
+  // --- Experimental design  --- //
+  matrix[N, K] X;                                   // The 'fixed effect' design matrix
+  array[N] int<lower=1, upper=Ntrees> tree_id;      // index lookup for the tree random effect
+  array[N] int<lower=1, upper=Npanels> panel_id;    // index lookup for the panel random effect
+
+}
+
+```
+
+```{r}
+
+# have to first change the na.action
+curr_na <- options("na.action")
+options(na.action = 'na.pass')
+# design matrix
+X <- model.matrix(
+  ~ tree_treatment * heat_treatment + needle_age + scale(dayPPFD),
+  data = dat2
+)
+
+# now just fill the NA rows with a placeholder
+# they won't count towards the likelihood
+X[is.na(X)] <- 0
+
+# now we need factors for tree and panel id
+tree_id <- factor(dat2$tree_id, exclude = NULL)
+panel_id <- factor(dat2$panel_id, exclude = NULL)
+
+
+# compile the stan data
+stan_data <- list(
+  Ndays  = nrow(Tmax_mat),
+  Ntrees = nlevels(tree_id),   # don't count the NA level
+  Npanels = nlevels(panel_id), # don't count the NA level
+  Nlag = Nlag,
+  N = nrow(X),
+  K = ncol(X),
+
+  l_Fv = dat2$l_Fv,
+  l_Fm  = dat2$logFm,
+  pa_FvFm = as.integer(dat2$pa_Fo), # 0,1 absence-presence indicator
+  date_index = dat2$date_index,
+
+  Tmax = Tmax_mat,
+  Tmin = Tmin_mat,
+  VPD  = VPD_mat,
+  
+  X = X,
+  tree_id = as.integer(tree_id),
+  panel_id = as.integer(panel_id)
+)
+
+str(stan_data)
+
+```
+
+
+## Fitting the model
+
+```{r}
+# first compile the model using rstan
+sam_mod <- rstan::stan_model(
+  file = here("Stan/FvFm_antecedent.stan")
+)
+
+# now sample from the model by feeding in the data
+sam_fit <- rstan::sampling(
+  sam_mod,
+  data = stan_data,
+  cores = 4,
+  chains = 4,
+  control = list(max_treedepth = 15)
+)
+```
+
+
+## Checking the fit
+
+`rstan` saves `transformed parameters` by default, so `mu`, the lag weights
+(`w_Tmax`/`w_Tmin`/`w_VPD`), and the cumulative antecedent series
+(`ant_Tmax`/`ant_Tmin`/`ant_VPD`) are all already sitting in `sam_fit`.
+We can use `tidybayes::spread_draws()` + `median_qi()` to turn posterior
+draws straight into tidy median + 90% interval summaries and `bayesplot` for a quick,
+off-the-shelf look at the lag weights straight from the `stanfit` object.
+
+```{r}
+
+# only rows with an actual paired FvFm measurement have a real residual
+obs_idx <- which(stan_data$pa_FvFm == 1)
+
+# posterior-mean antecedent series, to attach to each observed row by date_index
+ant_means <- rstan::extract(sam_fit, pars = c("ant_Tmax", "ant_Tmin", "ant_VPD")) |>
+  map(colMeans) |>
+  as_tibble() |>
+  mutate(date_index = row_number())
+
+```
+
+### Residual draws and a per-observation summary
+
+For every observed row, `l_Fv[n] - mu[n]` is itself a posterior
+distribution (a bit strange at first). We can use `spread_draws()` to pull
+`mu[n]` out in tidy long form, and `median_qi()` collapses each row's
+draws down to a median and a 90% interval in one step.
+
+```{r}
+
+mu_summary <- sam_fit |>
+  spread_draws(mu[n]) |>
+  group_by(n) |>
+  median_qi(mu, .width = 0.90)
+
+# residuals only make sense where FvFm was actually observed; computing
+# the quantile summary on just the observed rows and then left_join-ing
+# onto every row (below) leaves resid/resid.lower/resid.upper as NA for
+# the latent rows, rather than erroring on all-NA groups or mismatching
+# row counts against dat2
+resid_obs <- sam_fit |>
+  spread_draws(mu[n]) |>
+  filter(n %in% obs_idx) |>
+  mutate(resid = stan_data$l_Fv[n] - mu) |>
+  group_by(n) |>
+  median_qi(resid, .width = 0.90) |>
+  select(n, resid, .lower, .upper)
+
+resid_summary <- mu_summary |>
+  left_join(resid_obs, by = "n", suffix = c("_mu", "_resid")) |>
+  bind_cols(dat2[, c("tree_treatment", "heat_treatment", "needle_age", "date_index", "Fo", "Fm", "FvFm")]) |>
+  left_join(ant_means, by = "date_index")
+
+```
+
+### Residuals vs. fitted
+
+```{r}
+
+ggplot(resid_summary, aes(mu, resid)) +
+  geom_pointinterval(aes(ymin = .lower_resid, ymax = .upper_resid), alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_smooth(se = FALSE) +
+  labs(
+    x = "Fitted mean log(Fv/Fm)",
+    y = "Residual (observed - fitted), posterior median + 90% interval"
+  )
+
+```
+
+### Residuals vs. the fixed explanatory variables
+
+`needle_age` is continuous; `tree_treatment` and `heat_treatment` are
+categorical, so they get boxplots of the residual medians by level instead
+of a scatterplot.
+
+```{r}
+
+ggplot(resid_summary, aes(needle_age, resid)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Needle age", y = "Residual (median + 90% interval)")
+
+```
+
+```{r}
+
+resid_summary |>
+  pivot_longer(
+    cols = c(tree_treatment, heat_treatment),
+    names_to = "variable", values_to = "level"
+  ) |>
+  ggplot(aes(level, resid)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(x = NULL, y = "Residual (median)")
+
+```
+
+### Residuals vs. the cumulative antecedent variables
+
+```{r}
+
+resid_summary |>
+  pivot_longer(
+    cols = c(ant_Tmax, ant_Tmin, ant_VPD),
+    names_to = "variable", values_to = "value"
+  ) |>
+  ggplot(aes(value, resid)) +
+  geom_pointinterval(aes(ymin =.lower_resid, ymax = .upper_resid), alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(x = "Cumulative (antecedent) value, standardized", y = "Residual (median + 90% interval)")
+
+```
+
+### Residuals by tree and by date
+
+If the left tail of the residual distribution is driven by a handful of
+trees or a specific stretch of dates (e.g. an unmodeled stress event), it
+should show up as a cluster of low residuals concentrated in a few
+`tree_id` boxplots or a localized dip in the residual-vs-date trend, rather
+than a uniform spread across both.
+
+```{r}
+
+resid_summary |>
+  mutate(tree_id = as.factor(dat2$tree_id)) |>
+  ggplot(aes(tree_id, resid)) +
+  geom_boxplot() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Tree ID", y = "Residual (median)") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplot(resid_summary, aes(date_index, resid)) +
+  geom_pointinterval(aes(ymin = .lower_resid, ymax = .upper_resid), alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_smooth(se = FALSE) +
+  labs(
+    x = "Date index (days since first measurement)",
+    y = "Residual (median + 90% interval)"
+  )
+
+```
+
+## The piecewise-linear Tmax relationship
+
+`mu` includes a hinge term for `ant_Tmax`:
+`alpha[1] * (ant_Tmax - tau_Tmax) + delta_Tmax * fmax(0, ant_Tmax - tau_Tmax)` -- slope
+`alpha[1]` below the threshold `tau_Tmax`, slope `alpha[1] + delta_Tmax`
+above it. To see that shape on its own, we hold every other term in `mu`
+out and evaluate just this component across a grid of `ant_Tmax` values.
+`spread_draws()` + `crossing()` cross every posterior draw of
+`alpha[1]`/`delta_Tmax`/`tau_Tmax` with the grid in one tidy step, so
+`median_qi()` + `geom_lineribbon()` reflect the full posterior uncertainty
+in the kink itself.
+
+```{r}
+#| label: "threshold"
+
+
+Tmax_grid <- seq(
+  min(stan_data$Tmax), max(stan_data$Tmax),
+  length.out = 100
+)
+
+Tmax_draws <- sam_fit |>
+  spread_draws(alpha[k], beta[k], tau_Tmax, delta_Tmax) |>
+  filter(k == 1) |>
+  crossing(ant_Tmax = Tmax_grid) |>
+  mutate(effect = beta + alpha * (ant_Tmax - tau_Tmax) + delta_Tmax * pmax(0, ant_Tmax - tau_Tmax))
+
+Tmax_partial <- Tmax_draws |>
+  group_by(ant_Tmax) |>
+  median_qi(effect, .width = 0.90)
+
+ggplot(Tmax_partial, aes(ant_Tmax, effect)) +
+  geom_lineribbon(aes(ymin = .lower, ymax = .upper), alpha = 0.3) +
+  labs(
+    x = "Cumulative (antecedent) Tmax, standardized",
+    y = "Partial effect on log(Fv/Fm)"
+  )
+
+```
+
+## Lag weights (`w_Tmax`, `w_Tmin`, `w_VPD`)
+
+Each weight vector is already normalized in `transformed parameters`
+(`gamma_* / sum(gamma_*)`). `bayesplot::mcmc_intervals()` gives a quick
+look straight from `sam_fit` by matching parameter names with a regex --
+no manual extraction at all. Then `tidybayes` builds the lag-ordered
+line/ribbon view: `spread_draws()` pulls all three weight vectors by their
+shared `lag` index in one call, and `median_qi()` summarizes each lag.
+Column 1 is the most recent lag (1 day before the measurement day); column
+`Nlag` is the oldest, matching the ordering used when the lag matrices
+were built.
+
+```{r}
+
+mcmc_intervals(sam_fit, regex_pars = "^w_(Tmax|Tmin|VPD)\\[")
+
+```
+
+```{r}
+
+weight_summary <- sam_fit |>
+  spread_draws(w_Tmax[lag], w_Tmin[lag], w_VPD[lag]) |>
+  pivot_longer(c(w_Tmax, w_Tmin, w_VPD), names_to = "variable", values_to = "weight") |>
+  mutate(variable = str_remove(variable, "^w_")) |>
+  group_by(variable, lag) |>
+  median_qi(weight, .width = 0.90)
+
+ggplot(weight_summary, aes(lag, weight)) +
+  geom_lineribbon(aes(ymin = weight.lower, ymax = weight.upper), alpha = 0.3) +
+  facet_wrap(~ variable) +
+  labs(x = "Lag (days before the measurement day); 1 = most recent", y = "Weight")
+
+```
+
+
+
+## `pre_dawn_psi` and its missingness indexes
+
+The Stan model has a single, shared `pre_dawn_psi` series of length
+`Ndays + Nlag` (i.e. the full calendar record, `Ndays_total`) -- it does **not** currently
+have a tree-specific water-potential effect. The simulated data, however,
+gives each tree its own `WP` trajectory (different drying rates/intercepts
+per tree). Until the model is extended to a per-tree `Psi` (its own tree
+random effect, most likely), we collapse `WP` to a single daily series by
+averaging across whichever trees were sampled that day. **This is a
+placeholder choice to get the pipeline running end-to-end -- revisit once the
+model handles tree-level `Psi`, since averaging throws away real tree-level
+signal in the water-potential data.**
+
+Missing entries (weeks with no `WP` reading from any tree, or days between
+sampling efforts) are passed to Stan as index pairs (`Nmiss_psi`,
+`miss_psi`) and filled with a placeholder in the data vector -- Stan treats
+those positions as parameters (`psi_impute`) rather than data.
+
+```{r}
+
+psi_daily <- dat |>
+  group_by(day) |>
+  summarise(WP = mean(WP, na.rm = TRUE), .groups = "drop") |>
+  right_join(tibble(day = 1:Ndays_total), by = "day") |>
+  arrange(day) |>
+  mutate(WP = ifelse(is.nan(WP), NA_real_, WP))  # mean() of all-NA gives NaN, not NA
+
+stopifnot(nrow(psi_daily) == Ndays_total)
+
+pre_dawn_psi <- psi_daily$WP
+miss_psi     <- which(is.na(pre_dawn_psi))
+Nmiss_psi    <- length(miss_psi)
+
+pre_dawn_psi[miss_psi] <- 0  # Stan placeholder; these entries are modeled, not observed
+
+```
+
+
+
+
+
