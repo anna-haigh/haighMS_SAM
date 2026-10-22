@@ -64,7 +64,7 @@ data {
   int<lower=1> Nlag;                 // number of lag days included in the antecedent window
   int<lower=1> N;                    // total number of rows in the data
   int<lower=1> K;                    // columns in the mean design matrix. Intercept must be column 1
-  int<lower=1> Kp;                   // columns in the damage-probability design matrix. Intercept must be column 1
+  // int<lower=1> Kp;                   // columns in the damage-probability design matrix. Intercept must be column 1
   int<lower=1> Npanels;              // Number of unique panels/branches tracked
   int<lower=1> Ngroups;              // number of tree_treatment x heat_treatment groups, each with its own damage-logit antecedent slopes
 
@@ -83,7 +83,7 @@ data {
 
   // --- Experimental design  --- //
   matrix[N, K] X;                                   // design matrix for the recovery-component mean
-  matrix[N, Kp] Xp;                                 // design matrix for the damage-probability logit
+  // matrix[N, Kp] Xp;                                 // design matrix for the damage-probability logit
   array[N] int<lower=1, upper=Ntrees> tree_id;      // index lookup for the tree random effect
   array[N] int<lower=1, upper=Npanels> panel_id;    // index lookup for the panel random effect
   array[N] int<lower=1, upper=Ngroups> group_id;    // index lookup for the row's tree_treatment x heat_treatment group
@@ -106,8 +106,19 @@ parameters {
   real<lower=0> sigma_dmg;              // damaged-component SD (expect ~1.3, much wider than sigma)
 
   // --- damage-probability (logit) model --- //
-  vector[Kp] beta_p;                    // intercept, plus design covariates, on the logit scale
-  array[Ngroups] vector[3] alpha_p;     // group-specific antecedent coefficients: Tmax, Tmin, VPD (one vector per tree_treatment x heat_treatment combo)
+  real beta_p;                          // intercept on the logit scale
+
+  // alpha_p is now partially pooled across groups rather than fit
+  // independently (normal(0,1) per group): the damaged tail is tiny and
+  // split very unevenly across the 4 tree_treatment x heat_treatment groups
+  // (as few as ~2-3 events in the thinnest one), so an independent fit lets
+  // the thinnest group's slopes wander onto whatever handful of points it
+  // has, which is a likely source of chain-to-chain disagreement. Each
+  // group's vector is now a non-centered deviation from a shared mean, so
+  // a data-starved group borrows strength from the better-informed ones.
+  vector[3] mu_alpha_p;                 // population-average antecedent slopes (Tmax, Tmin, VPD) across groups
+  vector<lower=0>[3] tau_alpha_p;       // between-group SD of each slope -- the amount of pooling
+  array[Ngroups] vector[3] alpha_p_std; // non-centered group deviations (std_normal); alpha_p[g] built in transformed parameters
   //real tau_Tmax;                        // hinge location on standardized ant_Tmax
   //real delta_Tmax;                      // hinge slope change above tau_Tmax
   vector[Npanels] u_panel_p_std;        // non-scaled panel death-propensity effects
@@ -126,6 +137,13 @@ transformed parameters {
   vector[Nlag] w_Tmax = gamma_Tmax ./ sum(gamma_Tmax);
   vector[Nlag] w_Tmin = gamma_Tmin ./ sum(gamma_Tmin);
   vector[Nlag] w_VPD = gamma_VPD ./ sum(gamma_VPD);
+
+  // Non-centered reconstruction of the group-specific antecedent slopes;
+  // see the note on alpha_p_std in the parameters block.
+  array[Ngroups] vector[3] alpha_p;
+  for (g in 1:Ngroups) {
+    alpha_p[g] = mu_alpha_p + tau_alpha_p .* alpha_p_std[g];
+  }
 
   // --- Construct cumulative effects ---
   vector[Ndays] ant_Tmax = Tmax * w_Tmax;
@@ -178,22 +196,40 @@ model {
   // ~2.3% of retained rows are damaged, so the logit intercept sits near -3.7.
   // A diffuse prior on a rare-event logit invites separation, so these are kept
   // tighter than the normal(0, 5) used on the mean model's coefficients.
-  // beta_p[1] ~ normal(-3.5, 1.5);
+  beta_p ~ normal(-3.5, 1.5);
   // if (Kp > 1) {
   //   beta_p[2:Kp] ~ normal(0, 2.5);
   // }
+
+  // Partial pooling across groups (see parameters block). mu_alpha_p gets
+  // the same weakly-informative prior the independent alpha_p[g] used to
+  // have; tau_alpha_p controls how much each group is allowed to deviate
+  // from that shared mean. With only 4 groups, tau_alpha_p's own posterior
+  // will stay wide, but it still shrinks the data-starved groups toward the
+  // better-informed ones instead of letting them fit on 2-3 points alone.
   for (g in 1:Ngroups) {
-    alpha_p[g] ~ normal(0, 2.5);
+    alpha_p_std[g] ~ std_normal();
   }
+  mu_alpha_p ~ normal(0, 1);
+  tau_alpha_p ~ student_t(10, 0, 0.5);
   // delta_Tmax ~ normal(0, 2.5);
   // ant_Tmax is standardized, so it spans roughly [-2.5, 2.5]
   // tau_Tmax ~ normal(0, 1.5);
   u_panel_p_std ~ std_normal();
   sigma_panel_p ~ student_t(10, 0, 1);
 
-  gamma_Tmax ~ gamma(1, 1);
-  gamma_Tmin ~ gamma(1, 1);
-  gamma_VPD ~ gamma(1, 1);
+  // Dirichlet(2,2,2,2,2) via the gamma trick, up from Dirichlet(1,...,1)
+  // (uniform on the simplex). Uniform gives equal prior mass to a degenerate
+  // solution that dumps all weight on one lag day and to a smooth profile;
+  // with the antecedent terms now identified by only ~2-8 events per group
+  // (not the full ~3870-row dataset, as in FvFm_antecedent.stan), the
+  // data alone can't reliably rule out a spurious single-day optimum, which
+  // is a likely source of the extra mode. This pulls the prior mildly
+  // toward a smoother window without forcing it; raise further (e.g. 3-5)
+  // if chains still disagree on w_Tmax/w_Tmin/w_VPD.
+  gamma_Tmax ~ gamma(2, 1);
+  gamma_Tmin ~ gamma(2, 1);
+  gamma_VPD ~ gamma(2, 1);
 
   // --- likelihood ---
   // l_Fv ~ pi * Normal(mu_dmg, sigma_dmg) + (1 - pi) * Normal(mu_rec, sigma),
