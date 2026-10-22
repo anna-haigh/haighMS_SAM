@@ -1,5 +1,15 @@
 // FvFm model driven by an antecedent temperature index.
 //
+// The antecedent slopes (alpha) are now group-specific: each tree_treatment x
+// heat_treatment combination (Ngroups = 4: control/control, control/heated,
+// irrigated/control, irrigated/heated) gets its own Tmax/Tmin/VPD sensitivity,
+// i.e. a separate antecedent "line" per treatment group. This lets heat and
+// irrigation change how strongly antecedent weather predicts log(Fv/Fm), not
+// just the intercept (which X*beta already captures via its own
+// tree_treatment * heat_treatment interaction). The lag-weight profiles
+// (w_Tmax/w_Tmin/w_VPD, i.e. which days matter) and the Tmax hinge
+// (tau_Tmax/delta_Tmax) stay shared across groups -- only the slope magnitudes
+// differ, not which window of days or where the threshold sits.
 //
 // Stan has no NA, so missing FvFm entries are passed in as index pairs
 // indicating missing days; see the data block below for exactly what
@@ -13,6 +23,7 @@ data {
   int<lower=Ndays*Ntrees> N;         // total number of rows in the data, should be at least as many as days * trees
   int<lower=1> K;                    // columns in design matrix. Should at least be one for the intercept
   int<lower=1> Npanels;              // Number of unique panels/branches tracked
+  int<lower=1> Ngroups;              // number of tree_treatment x heat_treatment groups, each with its own antecedent slopes
 
   // Fv/Fm is modeled as log(Fv) with log(Fm) as an offset: since
   // log(Fv) = log(Fm) + log(Fv/Fm), giving log(Fv) mean log(Fm) + mu is
@@ -34,6 +45,7 @@ data {
   matrix[N, K] X;                                       // The 'fixed effect' design matrix
   array[N] int<lower=1, upper=Ntrees + 1> tree_id;      // index lookup for the tree random effect (plus a level for NA)
   array[N] int<lower=1, upper=Npanels + 1> panel_id;    // index lookup for the panel random effect
+  array[N] int<lower=1, upper=Ngroups> group_id;        // index lookup for the row's tree_treatment x heat_treatment group
 
 }
 
@@ -41,7 +53,7 @@ data {
 parameters {
   
   vector[K] beta;                       // regression coefficients: intercept, plus design covariates
-  vector[3] alpha;                      // regression coefs for the antecedent variables
+  array[Ngroups] vector[3] alpha;       // group-specific regression coefs for the antecedent variables (one vector per tree_treatment x heat_treatment combo)
   real<lower=0> sigma;                  // residual SD
   vector[Ntrees] u_tree_std;            // non-scaled tree random effects
   vector[Npanels] u_panel_std;          // non-scaled panel effects
@@ -102,11 +114,11 @@ transformed parameters {
   // restricted to observed rows below, and for generated quantities) ---
   vector[N] mu;
   for (n in 1:N) {
-    mu[n] = X[n, ] * beta + 
-        alpha[1] * (ant_Tmax[date_index[n]] - tau_Tmax) + 
+    mu[n] = X[n, ] * beta +
+        alpha[group_id[n]][1] * (ant_Tmax[date_index[n]] - tau_Tmax) +
         delta_Tmax * fmax(0.0, ant_Tmax[date_index[n]] - tau_Tmax) +
-        alpha[2] * ant_Tmin[date_index[n]] + 
-        alpha[3] * ant_VPD[date_index[n]] +
+        alpha[group_id[n]][2] * ant_Tmin[date_index[n]] +
+        alpha[group_id[n]][3] * ant_VPD[date_index[n]] +
         // delta_vpd * fmin(0.0, tau_vpd - ant_VPD[date_index[n]]) +
         u_tree_std[tree_id[n]] * sigma_tree +
         u_panel_std[panel_id[n]] * sigma_panel +
@@ -119,7 +131,9 @@ model {
 
   // --- priors ---
   beta ~ normal(0, 5);
-  alpha ~ normal(0, 5);
+  for (g in 1:Ngroups) {
+    alpha[g] ~ normal(0, 5);
+  }
   sigma ~ student_t(10, 0, 1);
   u_tree_std ~ std_normal();
   u_panel_std ~ std_normal();
@@ -157,9 +171,11 @@ model {
 
 generated quantities {
   vector[N] l_Fv_rep;               // posterior-predictive replicate for log(Fv)
+  vector[N] log_lik;                // per-row log-density, 0 where unobserved; for loo
 
   for (n in 1:N) {
     l_Fv_rep[n] = normal_rng(mu[n], sigma);
+    log_lik[n] = pa_FvFm[n] ? normal_lpdf(l_Fv[n] | mu[n], sigma) : 0;
   }
 
 }
