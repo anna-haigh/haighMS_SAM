@@ -1,11 +1,11 @@
 // Two-component mixture for Fv/Fm: irreparable damage vs. recovery, with
-// damage probability driven by the CURRENT VALUE of the recovery trajectory
+// damage probability driven by the current value of the recovery trajectory
 // (a joint longitudinal/hazard structure) rather than its own antecedent
 // submodel.
 //
 // Variant of FvFm_antecedent_mixture.stan. That model put the antecedent
 // (SAM) structure directly on the damage-probability logit: group-specific
-// alpha_p slopes plus three private Dirichlet lag-weight simplices,
+// alpha_p slopes plus three Dirichlet lag-weights,
 // estimated almost entirely from the rare damaged tail (as few as 2-3
 // events in the thinnest tree_treatment x heat_treatment group). That is a
 // lot of structure asked of very little data, and is the suspected cause of
@@ -22,8 +22,7 @@
 // like a joint longitudinal/survival model, where the hazard is driven by
 // the current value of a fitted trajectory. This needs only an intercept
 // and a slope (kappa0, kappa1) to be estimated from the sparse tail,
-// instead of a full antecedent submodel (alpha_p + three lag-weight
-// simplices, ~27 parameters).
+// instead of a full antecedent submodel.
 //
 // This file also fixes the known limitation flagged in
 // FvFm_antecedent_mixture.stan's header: the mixture now lives on the RAW
@@ -50,6 +49,16 @@
 // Stan has no NA, so missing FvFm entries are passed in as a presence/
 // absence indicator; see the data block below for exactly what needs to be
 // precomputed in R before calling this model.
+//
+// Antecedent slopes (alpha) are SHARED across tree_treatment x heat_treatment
+// groups here, not group-specific -- a deliberate step back from a richer
+// version of this model, since even on the well-identified recovery mean the
+// group-specific alphas were still showing mixing problems. One shared
+// Tmax/Tmin/VPD sensitivity is a simpler, more stable starting point; splitting
+// it back out by group is a natural next step once this version is solid.
+// Ngroups/group_id are no longer read by this file -- harmless to keep
+// passing them in stan_data (rstan ignores unmatched data-list entries), no
+// R-side changes required.
 
 data {
 
@@ -59,7 +68,6 @@ data {
   int<lower=1> N;                    // total number of rows in the data
   int<lower=1> K;                    // columns in the mean design matrix. Intercept must be column 1
   int<lower=1> Npanels;              // Number of unique panels/branches tracked
-  int<lower=1> Ngroups;              // number of tree_treatment x heat_treatment groups, each with its own antecedent slopes
 
   // Fv/Fm is modeled on the raw Fv scale (not log(Fv)): the recovery
   // component below is lognormal (equivalent to log(Fv) ~ normal(mu, sig)),
@@ -80,20 +88,18 @@ data {
   matrix[N, K] X;                                   // design matrix for the recovery-component mean
   array[N] int<lower=1, upper=Ntrees> tree_id;      // index lookup for the tree random effect
   array[N] int<lower=1, upper=Npanels> panel_id;    // index lookup for the panel random effect
-  array[N] int<lower=1, upper=Ngroups> group_id;    // index lookup for the row's tree_treatment x heat_treatment group
 
 }
 
 
 parameters {
 
-  // --- recovery component mean, with the antecedent (SAM) structure back
-  // on it -- identical in form to FvFm_antecedent.stan, now shared with the
-  // hazard below rather than duplicated for it --- //
+  // --- recovery component mean, with the antecedent (SAM) structure
+  // identical in form to FvFm_antecedent.stan --- //
   vector[K] beta;                       // regression coefficients: intercept, plus design covariates
-  array[Ngroups] vector[3] alpha;       // group-specific antecedent coefficients: Tmax, Tmin, VPD (one vector per tree_treatment x heat_treatment combo)
-  real tau_Tmax;                        // hinge location on standardized ant_Tmax
-  real delta_Tmax;                      // hinge slope change above tau_Tmax
+  vector[3] alpha;                      // antecedent coefficients (Tmax, Tmin, VPD), shared across all tree_treatment x heat_treatment groups
+  // real tau_Tmax;                        // hinge location on standardized ant_Tmax
+  // real delta_Tmax;                      // hinge slope change above tau_Tmax
   real<lower=0> sigma;                  // recovery-component residual SD
   vector[Ntrees] u_tree_std;            // non-scaled tree random effects
   vector[Npanels] u_panel_std;          // non-scaled panel effects
@@ -109,11 +115,11 @@ parameters {
   real<lower=0> sigma_dmg;              // damaged-component SD on the raw Fv scale (expect ~0.6-0.9; see prior note)
 
   // --- tipping/hazard model: P(damaged) as a function of how far mu_rec
-  // has fallen below the healthy baseline, not an independent regression --- //
+  // has fallen below the healthy baseline --- //
   real kappa0;                          // logit intercept at zero depression
   real<lower=0> kappa1;                 // slope on depression below baseline; >0 since more depressed must mean more likely damaged
-  vector[Npanels] u_panel_p_std;        // non-scaled panel death-propensity effects, beyond what depression already explains
-  real<lower=0> sigma_panel_p;          // sd for panel death-propensity effects
+  // vector[Npanels] u_panel_p_std;        // non-scaled panel death-propensity effects, beyond what depression already explains
+  // real<lower=0> sigma_panel_p;          // sd for panel death-propensity effects
 
 }
 
@@ -129,15 +135,15 @@ transformed parameters {
   vector[Ndays] ant_Tmin = Tmin * w_Tmin;
   vector[Ndays] ant_VPD = VPD * w_VPD;
 
-  vector[N] mu_rec;   // recovery-component mean for Fv on the log scale (as in FvFm_antecedent.stan's mu)
+  vector[N] mu_rec;    // recovery-component mean for Fv on the log scale (as in FvFm_antecedent.stan's mu)
   vector[N] eta;       // logit of P(damaged)
 
   for (n in 1:N) {
     mu_rec[n] = X[n, ] * beta
-        + alpha[group_id[n]][1] * (ant_Tmax[date_index[n]] - tau_Tmax)
-        + delta_Tmax * fmax(0.0, ant_Tmax[date_index[n]] - tau_Tmax)
-        + alpha[group_id[n]][2] * ant_Tmin[date_index[n]]
-        + alpha[group_id[n]][3] * ant_VPD[date_index[n]]
+        + alpha[1] * ant_Tmax[date_index[n]]
+        // + delta_Tmax * fmax(0.0, ant_Tmax[date_index[n]] - tau_Tmax)
+        + alpha[2] * ant_Tmin[date_index[n]]
+        + alpha[3] * ant_VPD[date_index[n]]
         + u_tree_std[tree_id[n]] * sigma_tree
         + u_panel_std[panel_id[n]] * sigma_panel
         + l_Fm[n];
@@ -151,8 +157,8 @@ transformed parameters {
     // age, panel idiosyncrasies, ...): a branch that is already running low
     // for whatever reason is closer to collapse.
     real d_n = beta[1] - (mu_rec[n] - l_Fm[n]);
-    eta[n] = kappa0 + kappa1 * fmax(0.0, d_n)
-        + u_panel_p_std[panel_id[n]] * sigma_panel_p;
+    eta[n] = kappa0 + kappa1 * fmax(0.0, d_n);
+        //+ u_panel_p_std[panel_id[n]] * sigma_panel_p;
   }
 
 }
@@ -164,21 +170,19 @@ model {
   // dataset and don't need the tail-insurance tightening used when this
   // structure lived in the damage logit --- //
   beta ~ normal(0, 5);
-  for (g in 1:Ngroups) {
-    alpha[g] ~ normal(0, 5);
-  }
+  alpha ~ normal(0, 5);
   sigma ~ student_t(10, 0, 1);
   u_tree_std ~ std_normal();
   u_panel_std ~ std_normal();
   sigma_tree ~ student_t(10, 0, 1);
   sigma_panel ~ student_t(10, 0, 1);
 
-  gamma_Tmax ~ gamma(1, 1);
-  gamma_Tmin ~ gamma(1, 1);
-  gamma_VPD ~ gamma(1, 1);
+  gamma_Tmax ~ gamma(2, 1);
+  gamma_Tmin ~ gamma(2, 1);
+  gamma_VPD ~ gamma(2, 1);
 
-  delta_Tmax ~ normal(0, 1);
-  tau_Tmax ~ normal(0, 10);
+  // delta_Tmax ~ normal(0, 1);
+  // tau_Tmax ~ normal(0, 10);
 
   // --- priors: damaged component ---
   // Raw-Fv scale: healthy Fv ~ exp(-0.232)*Fm ~ 158, damaged-Fm-row
@@ -193,13 +197,13 @@ model {
   // --- priors: tipping/hazard model ---
   // (95 + 43 restored rows) / (3870 + 43 total) =~ 3.5% base rate =>
   // logit(0.035) =~ -3.3 at zero depression.
-  kappa0 ~ normal(-3.3, 1.5);
+  kappa0 ~ normal(-3, 1.5);
   // Healthy/damaged separation is ~1.6 log-units; wanting P(damaged)
   // noticeably elevated (~0.3) by d =~ 1.6 implies kappa1 =~ 1.5, well
   // inside this prior.
   kappa1 ~ normal(0, 2);
-  u_panel_p_std ~ std_normal();
-  sigma_panel_p ~ student_t(10, 0, 0.5);
+  // u_panel_p_std ~ std_normal();
+  // sigma_panel_p ~ student_t(10, 0, 0.5);
 
   // --- likelihood ---
   // Fv ~ pi * Normal(0, sigma_dmg) + (1 - pi) * LogNormal(mu_rec, sigma),

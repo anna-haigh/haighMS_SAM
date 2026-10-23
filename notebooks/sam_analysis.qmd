@@ -137,9 +137,14 @@ dat2 <- dat |>
 dat2 <- dat2 |>
   mutate(
     date_index = as.integer(date - first_day + 1),
+    # Raw Fv, kept on its natural scale rather than logged: FvFm_antecedent_
+    # mixture_hazard.stan's recovery component is lognormal (the Jacobian-
+    # correct equivalent of log(Fv) ~ normal(mu_rec, sigma)) and its damaged
+    # component is normal(0, sigma_dmg) with full support, so the mixture
+    # likelihood itself handles Fv <= 0 -- no log transform, and no need to
+    # drop or placeholder-augment those rows here.
     Fv = (Fm - Fo),
-    Fv_aug = if_else(is.na(Fv), 1.0, Fv),
-    l_Fv = log(Fv_aug),
+    Fv_filled = if_else(is.na(Fv), 0, Fv),
     Fm_aug = if_else(is.na(Fm), 1.0, Fm),
     logFm = log(Fm_aug),
     pa_Fo = !is.na(Fo),
@@ -148,20 +153,21 @@ dat2 <- dat2 |>
     # days_since_heat = date - panel_off is a continuous "time since the heat
     # event" covariate: 0 on the first post-treatment reading, increasing
     # from there, and negative on the "initial" pre-treatment baseline
-    # reading(s). This enters Xp (the damage-probability design matrix)
-    # below, which is evaluated for every row regardless of pa_FvFm, so it
-    # can't be NA anywhere -- but it only needs a real value where pa_Fo is
-    # TRUE; rows without an actual FvFm reading never contribute to the
-    # likelihood, so a 0 placeholder there (panel_off is NA for the
-    # water-potential-only daily rows, which have no panel_id) is harmless.
+    # reading(s). No longer a design-matrix input (the damage-probability
+    # model is now driven by depression in the fitted mean, not its own
+    # covariate set) -- kept as a diagnostic variable, e.g. for checking
+    # whether p_dmg's rise-then-fade pattern lines up with time since heat.
     days_since_heat = as.numeric(date - panel_off),
     days_since_heat = if_else(is.na(days_since_heat), 0, days_since_heat)
-  ) |>
-  filter(!is.nan(l_Fv))
+  )
 
 ```
 
-Note that the warnings come from negative $F_v$ values, so we drop those rows.
+Note that `Fv` can legitimately be negative or zero from instrument noise;
+those rows are no longer dropped -- the mixture likelihood in
+`FvFm_antecedent_mixture_hazard.stan` assigns them to the damaged component,
+which has support there, rather than the lognormal recovery component, which
+doesn't.
 
 ## First without predawn water potential
 
@@ -219,21 +225,6 @@ X <- model.matrix(
 # they won't count towards the likelihood
 X[is.na(X)] <- 0
 
-# design matrix for the damage-probability logit (used by
-# FvFm_antecedent_mixture.stan, not the single-component model fit below).
-# Deliberately leaner than X -- no dayPPFD -- since only ~95 rows fall in the
-# damaged tail and a rare-event logit can't support as many parameters.
-# ns(days_since_heat, df = 3) lets damage probability rise after the heat
-# event and fade afterward, rather than forcing a monotonic linear trend onto
-# a pattern that clearly isn't one (the damaged cluster concentrates at
-# measurements 0/1/2 and clears by 7/9/14).
-Xp <- model.matrix(
-  ~ tree_treatment * heat_treatment + needle_age +
-    splines::ns(days_since_heat, df = 3),
-  data = dat2
-)
-Xp[is.na(Xp)] <- 0
-
 # now we need factors for tree and panel id
 tree_id <- factor(dat2$tree_id, exclude = NULL)
 panel_id <- factor(dat2$panel_id, exclude = NULL)
@@ -253,9 +244,8 @@ stan_data <- list(
   Nlag = Nlag,
   N = nrow(X),
   K = ncol(X),
-  Kp = ncol(Xp),            # only used by FvFm_antecedent_mixture.stan
 
-  l_Fv = dat2$l_Fv,
+  Fv = dat2$Fv_filled,
   l_Fm  = dat2$logFm,
   pa_FvFm = as.integer(dat2$pa_Fo), # 0,1 absence-presence indicator
   date_index = dat2$date_index,
@@ -265,7 +255,6 @@ stan_data <- list(
   VPD  = VPD_mat,
 
   X = X,
-  Xp = Xp,                   # only used by FvFm_antecedent_mixture.stan
   tree_id = as.integer(tree_id),
   panel_id = as.integer(panel_id),
   group_id = as.integer(group_id)
@@ -280,7 +269,7 @@ str(stan_data)
 ```{r}
 # first compile the model using rstan
 sam_mod <- rstan::stan_model(
-  file = here("Stan/FvFm_antecedent_mixture.stan")
+  file = here("Stan/FvFm_antecedent_mixture_hazard.stan")
 )
 
 # now sample from the model by feeding in the data
@@ -288,8 +277,8 @@ sam_fit <- rstan::sampling(
   sam_mod,
   data = stan_data,
   cores = 4,
-  chains = 4,
-  control = list(max_treedepth = 15)
+  chains = 4
+  #control = list(max_treedepth = 15)
 )
 ```
 
@@ -310,26 +299,92 @@ ant_means <- rstan::extract(sam_fit, pars = c("ant_Tmax", "ant_Tmin", "ant_VPD")
 
 ```
 
+### Posterior predictive checks
+
+Before the per-row residual diagnostics below, a coarser pass: does the model reproduce the two things we actually care about at a glance -- the overall rate of damage, and the general shape of the raw `Fv` distribution -- before we start picking apart individual rows? `Fv_rep` (the mixture's own posterior-predictive replicate, already in `sam_fit`) is all `bayesplot::ppc_*` needs; we just restrict both the observed `Fv` and its replicates to rows with an actual reading (`obs_idx`, from above).
+
+```{r}
+
+Fv_rep <- rstan::extract(sam_fit, pars = "Fv_rep")$Fv_rep   # draws x N
+y_obs  <- stan_data$Fv[obs_idx]
+y_rep  <- Fv_rep[, obs_idx]                                 # draws x Nobs
+
+```
+
+**Proportion damaged.** `Fv <= 0` is the simplest, most conservative damaged indicator: it doesn't depend on any fitted parameter (unlike `p_dmg`), so comparing its rate in the data against its rate across posterior-predictive replicates is a fair end-to-end test of whether `kappa0`/`kappa1`/`sigma_dmg` together reproduce the right overall damage frequency, not a restatement of the model's own classification.
+
+```{r}
+
+prop_damaged <- function(x) mean(x <= 0)
+
+ppc_stat(y_obs, y_rep, stat = prop_damaged) +
+  labs(
+    x = "Proportion of readings with Fv <= 0",
+    title = "PPC: overall proportion damaged"
+  )
+
+```
+
+Splitting this by `tree_treatment x heat_treatment` group checks something specific to the recent simplification: now that `alpha` is shared across groups rather than group-specific, does the model still reproduce each group's damage rate, or does pooling the antecedent slopes cost it the ability to tell a heavily-damaged group from a lightly-damaged one?
+
+```{r}
+
+ppc_stat_grouped(
+  y_obs, y_rep,
+  group = group_id[obs_idx],
+  stat = prop_damaged
+) +
+  labs(title = "PPC: proportion damaged, by tree x heat treatment group")
+
+```
+
+**General fit.** `ppc_dens_overlay()` checks the overall shape -- does the model reproduce the bimodal pattern (a spike near zero from the damaged component, a bump near the healthy mode from the recovery component)? -- and `ppc_stat_2d()` checks location and scale jointly (mean and sd of `Fv`) in one plot.
+
+```{r}
+
+# subset to 50 draws, bayesplot's usual recommendation for dens_overlay
+ppc_dens_overlay(y_obs, y_rep[sample(nrow(y_rep), 50), ]) +
+  labs(x = "Raw Fv", title = "PPC: overall distribution of Fv")
+
+ppc_stat_2d(y_obs, y_rep, stat = c("mean", "sd")) +
+  labs(title = "PPC: mean and sd of Fv")
+
+```
+
 ### Residual draws and a per-observation summary
 
-For every observed row, `l_Fv[n] - mu[n]` is itself a posterior distribution (a bit strange at first). We can use `spread_draws()` to pull `mu[n]` out in tidy long form, and `median_qi()` collapses each row's draws down to a median and a 90% interval in one step.
+In the mixture, every observed row's likelihood contribution blends two components, so there's no single `resid = Fv[n] - fitted[n]` the way there was under `FvFm_antecedent.stan`. These diagnostics restrict to rows that the posterior assigns (comfortably) to the recovery component -- `Fv > 0` and a low posterior `p_dmg` -- so `log(Fv[n]) - mu_rec[n]` is a meaningful residual there; a parallel check for the damaged component follows below. We use `spread_draws()` to pull `mu_rec[n]` and `p_dmg[n]` out in tidy long form, and `median_qi()` collapses each row's draws down to a median and a 90% interval in one step.
 
 ```{r}
 
 mu_summary <- sam_fit |>
-  spread_draws(mu[n]) |>
+  spread_draws(mu_rec[n]) |>
   group_by(n) |>
-  median_qi(mu, .width = 0.90)
+  median_qi(mu_rec, .width = 0.90) |>
+  rename(mu = mu_rec)
 
-# residuals only make sense where FvFm was actually observed; computing
-# the quantile summary on just the observed rows and then left_join-ing
-# onto every row (below) leaves resid/resid.lower/resid.upper as NA for
-# the latent rows, rather than erroring on all-NA groups or mismatching
-# row counts against dat2
+pdmg_med <- sam_fit |>
+  spread_draws(p_dmg[n]) |>
+  group_by(n) |>
+  median_qi(p_dmg, .width = 0.90) |>
+  select(n, p_dmg)
+
+# "recovery-dominated": an actual observation, Fv > 0 (so log(Fv) is even
+# defined), and posterior P(damaged) comfortably low -- these diagnostics
+# describe the healthy mode's fit, not the mixture's own allocation
+recovery_idx <- tibble(n = seq_along(stan_data$Fv), Fv = stan_data$Fv, pa_FvFm = stan_data$pa_FvFm) |>
+  left_join(pdmg_med, by = "n") |>
+  filter(pa_FvFm == 1, Fv > 0, p_dmg < 0.1) |>
+  pull(n)
+
+# residuals only make sense for recovery-dominated rows; computing the
+# quantile summary on just those rows and then left_join-ing onto every row
+# (below) leaves resid/resid.lower/resid.upper as NA elsewhere, rather than
+# erroring on all-NA groups or mismatching row counts against dat2
 resid_obs <- sam_fit |>
-  spread_draws(mu[n]) |>
-  filter(n %in% obs_idx) |>
-  mutate(resid = stan_data$l_Fv[n] - mu) |>
+  spread_draws(mu_rec[n]) |>
+  filter(n %in% recovery_idx) |>
+  mutate(resid = log(stan_data$Fv[n]) - mu_rec) |>
   group_by(n) |>
   median_qi(resid, .width = 0.90) |>
   select(n, resid, .lower, .upper)
@@ -338,6 +393,37 @@ resid_summary <- mu_summary |>
   left_join(resid_obs, by = "n", suffix = c("_mu", "_resid")) |>
   bind_cols(dat2[, c("tree_treatment", "heat_treatment", "needle_age", "date_index", "Fo", "Fm", "FvFm")]) |>
   left_join(ant_means, by = "date_index")
+
+```
+
+### Damaged-component check
+
+A parallel check for the other component: for rows the posterior assigns to damage (`p_dmg > 0.5`), `Fv` itself should look like `Normal(0, sigma_dmg)` -- and, per the identifiability note in the Stan file, should sit nowhere near the recovery component's (much larger) fitted values.
+
+```{r}
+
+damaged_idx <- tibble(n = seq_along(stan_data$Fv), Fv = stan_data$Fv, pa_FvFm = stan_data$pa_FvFm) |>
+  left_join(pdmg_med, by = "n") |>
+  filter(pa_FvFm == 1, p_dmg > 0.5) |>
+  pull(n)
+
+sigma_dmg_summary <- sam_fit |>
+  spread_draws(sigma_dmg) |>
+  median_qi(sigma_dmg, .width = 0.90)
+
+tibble(Fv = stan_data$Fv[damaged_idx]) |>
+  ggplot(aes(Fv)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20) +
+  stat_function(
+    fun = dnorm,
+    args = list(mean = 0, sd = sigma_dmg_summary$sigma_dmg),
+    color = "firebrick"
+  ) +
+  labs(
+    x = "Raw Fv (rows with posterior P(damaged) > 0.5)",
+    y = "Density",
+    title = "Damaged-component fit check"
+  )
 
 ```
 
