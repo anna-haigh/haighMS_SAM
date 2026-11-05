@@ -25,6 +25,9 @@ dat <- read_csv(here("Data/SAM_data.csv"))
 #| warning: false
 #| message: false
 
+ggplot(dat, aes(x = (Fm - Fo) / Fm)) +
+  geom_histogram()
+
 ggplot(dat, aes(x = max_airtemp, y = log(Fm - Fo) - log(Fm))) +
   geom_point(aes(color = tree_treatment, shape = heat_treatment)) +
   geom_smooth(aes(color = tree_treatment)) +
@@ -47,7 +50,7 @@ The data are organized as one row per tree-day (this might need to be per branch
 
 ## Constructing the Lagged weather matrices (`Tmax`, `Tmin`, `VPD`)
 
-`Tmax`/`Tmin`/`VPD` are day-level (shared across trees), so we first collapse to one row per calendar day, then build a `[Ndays, Nlag]` rolling-window matrix for each. Row `d` holds the `Nlag` days ending on (and including) calendar day `d + Nlag`, ordered **most-recent-first** (column 1 = lag 1, the day prior to the first measurement; column `Nlag` = the oldest day in the window) -- this matches how `antPsi` is built from `psi` in the Stan model, and the Dirichlet weight vectors (`w_Tmax`, etc.) assume the same ordering.
+`Tmax`/`Tmin`/`VPD` are day-level (shared across trees), so we first collapse to one row per calendar day, then build a `[Ndays, Nlag]` rolling-window matrix for each. Row `d` holds the `Nlag` days ending on (and including) calendar day `d + Nlag`, ordered **most-recent-first** (column 1 = lag 1, the day prior to the first measurement; column `Nlag` = the oldest day in the window) -- this matches how `antPsi` is built from `psi` in the Stan model, and the shared Dirichlet weight vector (`w`) assumes the same ordering.
 
 ```{r weather_dat}
 
@@ -137,17 +140,8 @@ dat2 <- dat |>
 dat2 <- dat2 |>
   mutate(
     date_index = as.integer(date - first_day + 1),
-    # Raw Fv, kept on its natural scale rather than logged: FvFm_antecedent_
-    # mixture_hazard.stan's recovery component is lognormal (the Jacobian-
-    # correct equivalent of log(Fv) ~ normal(mu_rec, sigma)) and its damaged
-    # component is normal(0, sigma_dmg) with full support, so the mixture
-    # likelihood itself handles Fv <= 0 -- no log transform, and no need to
-    # drop or placeholder-augment those rows here.
-    Fv = (Fm - Fo),
-    Fv_filled = if_else(is.na(Fv), 0, Fv),
-    Fm_aug = if_else(is.na(Fm), 1.0, Fm),
-    logFm = log(Fm_aug),
-    pa_Fo = !is.na(Fo),
+    FvFm_filled = if_else(is.na(FvFm), 0, FvFm),
+    pa_FvFm = !is.na(Fo),
     # `panel_off` is the day the heat treatment ended for that tree/panel
     # (the day after `panel_on`, i.e. heat applied once, overnight). So
     # days_since_heat = date - panel_off is a continuous "time since the heat
@@ -163,11 +157,7 @@ dat2 <- dat2 |>
 
 ```
 
-Note that `Fv` can legitimately be negative or zero from instrument noise;
-those rows are no longer dropped -- the mixture likelihood in
-`FvFm_antecedent_mixture_hazard.stan` assigns them to the damaged component,
-which has support there, rather than the lognormal recovery component, which
-doesn't.
+Note that `FvFm` can legitimately be negative from instrument noise; those rows are no longer dropped -- the mixture likelihood in `FvFm_antecedent_mixture_hazard_beta_norm.stan` assigns them to the damaged component, which has support there, rather than the beta recovery component, which doesn't.
 
 ## First without predawn water potential
 
@@ -235,6 +225,9 @@ panel_id <- factor(dat2$panel_id, exclude = NULL)
 group_id <- interaction(dat2$tree_treatment, dat2$heat_treatment, drop = TRUE) |>
   factor(exclude = NULL)
 
+# reset the na.action
+options(na.action = curr_na)
+
 # compile the stan data
 stan_data <- list(
   Ndays  = nrow(Tmax_mat),
@@ -245,9 +238,8 @@ stan_data <- list(
   N = nrow(X),
   K = ncol(X),
 
-  Fv = dat2$Fv_filled,
-  l_Fm  = dat2$logFm,
-  pa_FvFm = as.integer(dat2$pa_Fo), # 0,1 absence-presence indicator
+  FvFm = dat2$FvFm_filled,
+  pa_FvFm = as.integer(dat2$pa_FvFm), # 0,1 absence-presence indicator
   date_index = dat2$date_index,
 
   Tmax = Tmax_mat,
@@ -269,15 +261,15 @@ str(stan_data)
 ```{r}
 # first compile the model using rstan
 sam_mod <- rstan::stan_model(
-  file = here("Stan/FvFm_antecedent_mixture_hazard.stan")
+  file = here("Stan/FvFm_antecedent_mixture_hazard_beta_norm.stan")
 )
 
 # now sample from the model by feeding in the data
 sam_fit <- rstan::sampling(
   sam_mod,
   data = stan_data,
-  cores = 4,
-  chains = 4
+  cores = 3,
+  chains = 3
   #control = list(max_treedepth = 15)
 )
 ```
@@ -305,9 +297,9 @@ Before the per-row residual diagnostics below, a coarser pass: does the model re
 
 ```{r}
 
-Fv_rep <- rstan::extract(sam_fit, pars = "Fv_rep")$Fv_rep   # draws x N
-y_obs  <- stan_data$Fv[obs_idx]
-y_rep  <- Fv_rep[, obs_idx]                                 # draws x Nobs
+FvFm_rep <- rstan::extract(sam_fit, pars = "FvFm_rep")$FvFm_rep   # draws x N
+y_obs  <- stan_data$FvFm[obs_idx]
+y_rep  <- FvFm_rep[, obs_idx]                                 # draws x Nobs
 
 ```
 
@@ -344,7 +336,7 @@ ppc_stat_grouped(
 
 # subset to 50 draws, bayesplot's usual recommendation for dens_overlay
 ppc_dens_overlay(y_obs, y_rep[sample(nrow(y_rep), 50), ]) +
-  labs(x = "Raw Fv", title = "PPC: overall distribution of Fv")
+  labs(x = "FvFm", title = "PPC: overall distribution of FvFm")
 
 ppc_stat_2d(y_obs, y_rep, stat = c("mean", "sd")) +
   labs(title = "PPC: mean and sd of Fv")
@@ -555,28 +547,25 @@ ggplot(Tmax_partial, aes(ant_Tmax, effect, color = group, fill = group)) +
 
 ```
 
-## Lag weights (`w_Tmax`, `w_Tmin`, `w_VPD`)
+## Lag weights (`w`)
 
-Each weight vector is already normalized in `transformed parameters` (`gamma_* / sum(gamma_*)`). `bayesplot::mcmc_intervals()` gives a quick look straight from `sam_fit` by matching parameter names with a regex -- no manual extraction at all. Then `tidybayes` builds the lag-ordered line/ribbon view: `spread_draws()` pulls all three weight vectors by their shared `lag` index in one call, and `median_qi()` summarizes each lag. Column 1 is the most recent lag (1 day before the measurement day); column `Nlag` is the oldest, matching the ordering used when the lag matrices were built.
+The single weight vector `w` is shared across `Tmax`, `Tmin`, and `VPD`, and is declared as a `simplex` so it already sums to one. `bayesplot::mcmc_intervals()` gives a quick look straight from `sam_fit` by matching parameter names with a regex -- no manual extraction at all. Then `tidybayes` builds the lag-ordered line/ribbon view: `spread_draws()` pulls the weights by their `lag` index, and `median_qi()` summarizes each lag. Column 1 is the most recent lag (1 day before the measurement day); column `Nlag` is the oldest, matching the ordering used when the lag matrices were built.
 
 ```{r}
 
-mcmc_intervals(sam_fit, regex_pars = "^w_(Tmax|Tmin|VPD)\\[")
+mcmc_intervals(sam_fit, regex_pars = "^w\\[")
 
 ```
 
 ```{r}
 
 weight_summary <- sam_fit |>
-  spread_draws(w_Tmax[lag], w_Tmin[lag], w_VPD[lag]) |>
-  pivot_longer(c(w_Tmax, w_Tmin, w_VPD), names_to = "variable", values_to = "weight") |>
-  mutate(variable = str_remove(variable, "^w_")) |>
-  group_by(variable, lag) |>
-  median_qi(weight, .width = 0.90)
+  spread_draws(w[lag]) |>
+  group_by(lag) |>
+  median_qi(weight = w, .width = 0.90)
 
 ggplot(weight_summary, aes(lag, weight)) +
   geom_lineribbon(aes(ymin = .lower, ymax = .upper), alpha = 0.3) +
-  facet_wrap(~ variable) +
   labs(x = "Lag (days before the measurement day); 1 = most recent", y = "Weight")
 
 ```

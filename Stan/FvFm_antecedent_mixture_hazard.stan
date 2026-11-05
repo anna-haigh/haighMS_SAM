@@ -3,16 +3,6 @@
 // (a joint longitudinal/hazard structure) rather than its own antecedent
 // submodel.
 //
-// Variant of FvFm_antecedent_mixture.stan. That model put the antecedent
-// (SAM) structure directly on the damage-probability logit: group-specific
-// alpha_p slopes plus three Dirichlet lag-weights,
-// estimated almost entirely from the rare damaged tail (as few as 2-3
-// events in the thinnest tree_treatment x heat_treatment group). That is a
-// lot of structure asked of very little data, and is the suspected cause of
-// the chain-mixing problems diagnosed in that model (3 of 4 chains agreeing,
-// 1 landing on a different answer for everything logit-related) -- either
-// the shared lag-window placement or a thin group's slopes (or both) have a
-// second, comparably-good solution that 19-95 rows can't rule out.
 //
 // Here the antecedent structure goes back on the RECOVERY MEAN ONLY (as in
 // FvFm_antecedent.stan), where it is identified by the full dataset
@@ -25,7 +15,7 @@
 // instead of a full antecedent submodel.
 //
 // This file also fixes the known limitation flagged in
-// FvFm_antecedent_mixture.stan's header: the mixture now lives on the RAW
+// FvFm_antecedent_mixture.stan's header: the mixture now lives on the
 // Fv scale rather than log(Fv). The recovery component is
 // lognormal_lpdf(Fv | mu_rec, sigma) -- the identical distributional
 // assumption as log(Fv) ~ normal(mu_rec, sigma), just reparameterized with
