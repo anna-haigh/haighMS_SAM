@@ -224,6 +224,8 @@ panel_id <- factor(dat2$panel_id, exclude = NULL)
 # only the combinations actually observed (expected: 4)
 group_id <- interaction(dat2$tree_treatment, dat2$heat_treatment, drop = TRUE) |>
   factor(exclude = NULL)
+heat_id <- as.integer(as.factor(dat2$heat_treatment))
+heat_id[is.na(heat_id)] <- 1
 
 # reset the na.action
 options(na.action = curr_na)
@@ -234,6 +236,8 @@ stan_data <- list(
   Ntrees = nlevels(tree_id),   # don't count the NA level
   Npanels = nlevels(panel_id), # don't count the NA level
   Ngroups = nlevels(group_id),
+  Nheat = nlevels(as.factor(dat2$heat_treatment)),
+  heat_id = heat_id,
   Nlag = Nlag,
   N = nrow(X),
   K = ncol(X),
@@ -272,6 +276,8 @@ sam_fit <- rstan::sampling(
   chains = 3
   #control = list(max_treedepth = 15)
 )
+
+smry <- summary(sam_fit)
 ```
 
 ## Checking the fit
@@ -307,7 +313,7 @@ y_rep  <- FvFm_rep[, obs_idx]                                 # draws x Nobs
 
 ```{r}
 
-prop_damaged <- function(x) mean(x <= 0)
+prop_damaged <- function(x) mean(x <= 0.7)
 
 ppc_stat(y_obs, y_rep, stat = prop_damaged) +
   labs(
