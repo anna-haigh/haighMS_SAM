@@ -172,7 +172,7 @@ data {
 
 transformed data {
 
-  real U_dmg = 0.65;                    // upper limit of true FvFm for a damaged needle; above this it can still recover
+  real U_dmg = 0.45;                    // upper limit of true FvFm for a damaged needle; above this it can still recover
   real U_rec = 0.9;                     // upper limit of the recovery component's support; no observed FvFm exceeds ~0.89
 
 }

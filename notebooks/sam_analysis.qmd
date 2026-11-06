@@ -313,7 +313,7 @@ y_rep  <- FvFm_rep[, obs_idx]                                 # draws x Nobs
 
 ```{r}
 
-prop_damaged <- function(x) mean(x <= 0.7)
+prop_damaged <- function(x) mean(x <= 0.45)
 
 ppc_stat(y_obs, y_rep, stat = prop_damaged) +
   labs(
